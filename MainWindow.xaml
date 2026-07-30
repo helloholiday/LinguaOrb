@@ -72,7 +72,14 @@
                            Foreground="#9A91AA" Text="在线词典 · 支持断网示例词"/>
 
                 <Border Grid.Row="5" Margin="0,4,0,0" CornerRadius="16" ClipToBounds="True" Background="#FFF8E8">
-                    <Image Source="Assets/owl.png" Stretch="UniformToFill"/>
+                    <Grid>
+                        <Image x:Name="IllustrationImage" Source="Assets/owl.png" Stretch="UniformToFill"/>
+                        <Border x:Name="ImageLoadingBadge" Visibility="Collapsed"
+                                HorizontalAlignment="Right" VerticalAlignment="Top"
+                                Margin="8" Padding="8,4" CornerRadius="9" Background="#CCFFFFFF">
+                            <TextBlock Text="正在寻找配图…" FontSize="10" Foreground="#716887"/>
+                        </Border>
+                    </Grid>
                 </Border>
             </Grid>
         </Border>

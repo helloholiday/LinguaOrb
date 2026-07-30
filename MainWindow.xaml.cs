@@ -1,9 +1,11 @@
+using System.IO;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 
 namespace LinguaOrb;
 
@@ -12,6 +14,7 @@ public partial class MainWindow : Window
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(8) };
     private readonly MediaPlayer _player = new();
     private string? _audioUrl;
+    private int _imageRequestId;
     private readonly Dictionary<string, (string Word, string Ipa, string Phonics)> _offline = new()
     {
         ["蝴蝶"] = ("butterfly", "/ˈbʌtəflaɪ/", "but · ter · fly"),
@@ -135,6 +138,67 @@ public partial class MainWindow : Window
         SpeakButton.IsEnabled = !string.IsNullOrWhiteSpace(audioUrl);
         SpeakButton.Opacity = SpeakButton.IsEnabled ? 1 : .55;
         StatusText.Text = SpeakButton.IsEnabled ? $"{source} · 可播放英式发音" : $"{source} · 暂无发音音频";
+        _ = LoadIllustrationAsync(word);
+    }
+
+    private async Task LoadIllustrationAsync(string word)
+    {
+        var requestId = ++_imageRequestId;
+        ImageLoadingBadge.Visibility = Visibility.Visible;
+
+        try
+        {
+            var query = $"{word} cartoon illustration";
+            var apiUrl =
+                "https://commons.wikimedia.org/w/api.php?action=query&generator=search" +
+                $"&gsrsearch={Uri.EscapeDataString(query)}&gsrnamespace=6&gsrlimit=8" +
+                "&prop=imageinfo&iiprop=url&iiurlwidth=640&format=json&origin=*";
+
+            using var doc = JsonDocument.Parse(await Http.GetStringAsync(apiUrl));
+            if (!doc.RootElement.TryGetProperty("query", out var queryNode) ||
+                !queryNode.TryGetProperty("pages", out var pages))
+                throw new InvalidOperationException("No matching illustration.");
+
+            string? imageUrl = null;
+            foreach (var page in pages.EnumerateObject())
+            {
+                if (!page.Value.TryGetProperty("imageinfo", out var info) || info.GetArrayLength() == 0)
+                    continue;
+
+                var first = info[0];
+                imageUrl = first.TryGetProperty("thumburl", out var thumb)
+                    ? thumb.GetString()
+                    : first.TryGetProperty("url", out var original) ? original.GetString() : null;
+                if (!string.IsNullOrWhiteSpace(imageUrl)) break;
+            }
+
+            if (string.IsNullOrWhiteSpace(imageUrl))
+                throw new InvalidOperationException("No usable illustration.");
+
+            var bytes = await Http.GetByteArrayAsync(imageUrl);
+            await using var stream = new MemoryStream(bytes);
+            var bitmap = new BitmapImage();
+            bitmap.BeginInit();
+            bitmap.CacheOption = BitmapCacheOption.OnLoad;
+            bitmap.StreamSource = stream;
+            bitmap.EndInit();
+            bitmap.Freeze();
+
+            if (requestId == _imageRequestId)
+            {
+                IllustrationImage.Source = bitmap;
+                IllustrationImage.ToolTip = $"{word} · 图片来自 Wikimedia Commons";
+            }
+        }
+        catch
+        {
+            // 保留默认猫头鹰插图，图片失败不影响翻译结果。
+        }
+        finally
+        {
+            if (requestId == _imageRequestId)
+                ImageLoadingBadge.Visibility = Visibility.Collapsed;
+        }
     }
 
     private void Speak_Click(object sender, RoutedEventArgs e)
