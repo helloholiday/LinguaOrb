@@ -1,11 +1,14 @@
 using System.IO;
+using System.Diagnostics;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 
 namespace LinguaOrb;
 
@@ -15,6 +18,7 @@ public partial class MainWindow : Window
     private readonly MediaPlayer _player = new();
     private string? _audioUrl;
     private int _imageRequestId;
+    private readonly DispatcherTimer _healthTimer = new() { Interval = TimeSpan.FromSeconds(15) };
     private readonly Dictionary<string, (string Word, string Ipa, string Phonics)> _offline = new()
     {
         ["蝴蝶"] = ("butterfly", "/ˈbʌtəflaɪ/", "but · ter · fly"),
@@ -26,7 +30,11 @@ public partial class MainWindow : Window
         ["月亮"] = ("moon", "/muːn/", "moon")
     };
 
-    public MainWindow() => InitializeComponent();
+    public MainWindow()
+    {
+        InitializeComponent();
+        _healthTimer.Tick += async (_, _) => await RefreshApiStatusAsync();
+    }
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
@@ -37,11 +45,80 @@ public partial class MainWindow : Window
     private void Orb_Click(object sender, RoutedEventArgs e)
     {
         Card.Visibility = Card.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
+        ApiStatusPanel.Visibility = Card.Visibility;
         if (Card.Visibility == Visibility.Visible)
         {
             InputBox.Focus();
             Keyboard.Focus(InputBox);
+            _healthTimer.Start();
+            _ = RefreshApiStatusAsync();
         }
+        else
+        {
+            _healthTimer.Stop();
+        }
+    }
+
+    private async Task RefreshApiStatusAsync()
+    {
+        _healthTimer.Stop();
+        try
+        {
+            await Task.WhenAll(
+                ProbeApiAsync(
+                    "https://api.mymemory.translated.net/get?q=%E8%8B%B9%E6%9E%9C&langpair=zh-CN|en",
+                    TranslateApiTile, TranslatePingText),
+                ProbeApiAsync(
+                    "https://api.dictionaryapi.dev/api/v2/entries/en/apple",
+                    DictionaryApiTile, DictionaryPingText),
+                ProbeApiAsync(
+                    "https://commons.wikimedia.org/w/api.php?action=query&format=json&meta=siteinfo&siprop=general&origin=*",
+                    ImageApiTile, ImagePingText));
+        }
+        finally
+        {
+            if (Card.Visibility == Visibility.Visible)
+                _healthTimer.Start();
+        }
+    }
+
+    private static async Task ProbeApiAsync(string url, Border tile, TextBlock label)
+    {
+        label.Text = "检测中";
+        SetTileColor(tile, label, "#F5F2FA", "#DDD7E8", "#8A8299");
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            stopwatch.Stop();
+            var milliseconds = stopwatch.ElapsedMilliseconds;
+
+            if (!response.IsSuccessStatusCode)
+                throw new HttpRequestException($"HTTP {(int)response.StatusCode}");
+
+            label.Text = $"{milliseconds} ms";
+            if (milliseconds < 500)
+                SetTileColor(tile, label, "#E8F7EF", "#55B985", "#27845A");
+            else if (milliseconds < 1500)
+                SetTileColor(tile, label, "#FFF6DF", "#E7B94A", "#A87300");
+            else
+                SetTileColor(tile, label, "#FFF0E8", "#E99163", "#B85B2C");
+        }
+        catch
+        {
+            label.Text = "不可用";
+            SetTileColor(tile, label, "#FDEBEC", "#DD7A82", "#B53B46");
+        }
+    }
+
+    private static void SetTileColor(Border tile, TextBlock label, string background, string border, string text)
+    {
+        tile.Background = (SolidColorBrush)new BrushConverter().ConvertFromString(background)!;
+        tile.BorderBrush = (SolidColorBrush)new BrushConverter().ConvertFromString(border)!;
+        label.Foreground = (SolidColorBrush)new BrushConverter().ConvertFromString(text)!;
     }
 
     private async void Translate_Click(object sender, RoutedEventArgs e)
