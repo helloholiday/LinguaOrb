@@ -56,7 +56,13 @@
 
                 <Border Grid.Row="3" Margin="0,16,0,0" Padding="16,13" CornerRadius="16" Background="#FFF1EB">
                     <StackPanel>
-                        <TextBlock x:Name="WordText" Text="butterfly" FontSize="26" FontWeight="Bold" Foreground="#E86855"/>
+                        <Grid>
+                            <TextBlock x:Name="WordText" Text="butterfly" FontSize="26" FontWeight="Bold" Foreground="#E86855"/>
+                            <Button x:Name="SpeakButton" Content="🔊 英式发音" HorizontalAlignment="Right"
+                                    Padding="11,6" VerticalAlignment="Center" Click="Speak_Click"
+                                    Background="#FFFDFB" Foreground="#655B79" BorderBrush="#E8D7D1"
+                                    ToolTip="播放标准英式发音"/>
+                        </Grid>
                         <TextBlock x:Name="IpaText" Text="/ˈbʌtəflaɪ/" Margin="0,5,0,0" FontSize="15" Foreground="#574F68"/>
                         <TextBlock x:Name="PhonicsText" Text="自然拼读：but · ter · fly" Margin="0,5,0,0" FontSize="13" Foreground="#80778F"/>
                     </StackPanel>
