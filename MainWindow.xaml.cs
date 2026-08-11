@@ -609,12 +609,16 @@ public partial class MainWindow : Window
         {
             TranslateButton.Content = $"翻译中 {index + 1}/{sentences.Count}";
             var chinese = await TranslateAsync(sentences[index], "en", "zh-CN", preservePunctuation: true);
+            TranslateButton.Content = $"规范化 {index + 1}/{sentences.Count}";
+            var roundTripEnglish = await TranslateAsync(chinese, "zh-CN", "en", preservePunctuation: true);
+            var standardEnglish = StandardizeEnglishSentence(roundTripEnglish);
             if (index == 0) ParagraphResultsPanel.Children.Clear();
             AddSentenceResult(
                 index + 1,
                 "English", sentences[index],
                 "中文", chinese,
-                AnalyzeGrammarStructure(sentences[index]));
+                AnalyzeGrammarStructure(standardEnglish),
+                standardEnglish);
         }
         TranslateButton.Content = "拆句并翻译";
     }
@@ -648,6 +652,48 @@ public partial class MainWindow : Window
         }
     }
 
+    private static string StandardizeEnglishSentence(string sentence)
+    {
+        var result = Regex.Replace(sentence.Trim(), @"\s+", " ");
+        var replacements = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [@"\bgonna\b"] = "going to",
+            [@"\bwanna\b"] = "want to",
+            [@"\bgotta\b"] = "have to",
+            [@"\bkinda\b"] = "kind of",
+            [@"\bsorta\b"] = "sort of",
+            [@"\blemme\b"] = "let me",
+            [@"\bgimme\b"] = "give me",
+            [@"\bdunno\b"] = "do not know",
+            [@"\bcuz\b|\b'cause\b"] = "because",
+            [@"\bain't\b"] = "is not",
+            [@"\bcan't\b"] = "cannot",
+            [@"\bwon't\b"] = "will not",
+            [@"\bdon't\b"] = "do not",
+            [@"\bdoesn't\b"] = "does not",
+            [@"\bdidn't\b"] = "did not",
+            [@"\bisn't\b"] = "is not",
+            [@"\baren't\b"] = "are not",
+            [@"\bwasn't\b"] = "was not",
+            [@"\bweren't\b"] = "were not",
+            [@"\bi'm\b"] = "I am",
+            [@"\byou're\b"] = "you are",
+            [@"\bwe're\b"] = "we are",
+            [@"\bthey're\b"] = "they are",
+            [@"\bi've\b"] = "I have",
+            [@"\byou've\b"] = "you have",
+            [@"\bi'll\b"] = "I will",
+            [@"\byou'll\b"] = "you will"
+        };
+        foreach (var replacement in replacements)
+            result = Regex.Replace(result, replacement.Key, replacement.Value, RegexOptions.IgnoreCase);
+
+        if (result.Length > 0)
+            result = char.ToUpperInvariant(result[0]) + result[1..];
+        if (!Regex.IsMatch(result, @"[.!?]$")) result += ".";
+        return result;
+    }
+
     private void AddParagraphMessage(string message)
     {
         ParagraphResultsPanel.Children.Add(new TextBlock
@@ -667,7 +713,8 @@ public partial class MainWindow : Window
         string sourceText,
         string targetLabel,
         string targetText,
-        string grammar)
+        string grammar,
+        string? standardEnglish = null)
     {
         var content = new StackPanel();
         content.Children.Add(new TextBlock
@@ -701,6 +748,25 @@ public partial class MainWindow : Window
             FontWeight = FontWeights.SemiBold,
             Foreground = BrushFrom("#6B54C6")
         });
+        if (!string.IsNullOrWhiteSpace(standardEnglish))
+        {
+            content.Children.Add(new TextBlock
+            {
+                Text = "标准英文（回译整理）",
+                FontSize = 10,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = BrushFrom("#8A8299")
+            });
+            content.Children.Add(new TextBlock
+            {
+                Text = standardEnglish,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 3, 0, 8),
+                FontSize = 13,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = BrushFrom("#27845A")
+            });
+        }
         content.Children.Add(new TextBlock
         {
             Text = $"参考语法：{grammar}",
