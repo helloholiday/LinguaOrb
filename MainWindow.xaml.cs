@@ -14,6 +14,30 @@ namespace LinguaOrb;
 
 public partial class MainWindow : Window
 {
+    private sealed class NetworkCountingHandler(HttpMessageHandler innerHandler) : DelegatingHandler(innerHandler)
+    {
+        private long _activeTcpRequests;
+        private long _totalTcpRequests;
+        public event Action<long, long>? CountsChanged;
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var total = Interlocked.Increment(ref _totalTcpRequests);
+            var active = Interlocked.Increment(ref _activeTcpRequests);
+            CountsChanged?.Invoke(active, total);
+            try
+            {
+                return await base.SendAsync(request, cancellationToken);
+            }
+            finally
+            {
+                active = Interlocked.Decrement(ref _activeTcpRequests);
+                CountsChanged?.Invoke(active, Interlocked.Read(ref _totalTcpRequests));
+            }
+        }
+    }
+
     private enum AssistantMode
     {
         ZhWordToEnglish,
@@ -48,7 +72,8 @@ public partial class MainWindow : Window
         public TextBlock? LatencyText { get; set; }
     }
 
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(8) };
+    private static readonly NetworkCountingHandler NetworkCounter = new(new SocketsHttpHandler());
+    private static readonly HttpClient Http = new(NetworkCounter) { Timeout = TimeSpan.FromSeconds(8) };
     private readonly MediaPlayer _player = new();
     private string? _audioFilePath;
     private string? _currentWord;
@@ -119,6 +144,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        NetworkCounter.CountsChanged += NetworkCounter_CountsChanged;
         BuildProviderTiles();
         BuildAudioProviderTiles();
         _healthTimer.Tick += async (_, _) => await RefreshApiStatusAsync();
@@ -131,6 +157,11 @@ public partial class MainWindow : Window
         _deerAnimationTimer.Tick += DeerAnimationTimer_Tick;
         _deerAnimationTimer.Start();
         LoadDailyWords();
+    }
+
+    private void NetworkCounter_CountsChanged(long activeTcp, long totalTcp)
+    {
+        Dispatcher.BeginInvoke(() => NetworkRequestText.Text = $"UDP:0/0  TCP:{activeTcp}/{totalTcp}");
     }
 
     private static BitmapImage LoadResourceBitmap(string path)

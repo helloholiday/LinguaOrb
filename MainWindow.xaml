@@ -24,6 +24,10 @@
                 </Grid.RowDefinitions>
 
                 <Grid MouseLeftButtonDown="Header_MouseLeftButtonDown">
+                    <TextBlock x:Name="NetworkRequestText" Text="UDP:0/0  TCP:0/0"
+                               HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,7,34,0"
+                               FontSize="10" FontFamily="Consolas" Foreground="#817A94"
+                               ToolTip="当前请求数 / 本次启动累计请求数"/>
                     <StackPanel Margin="0,0,35,0">
                         <StackPanel Orientation="Horizontal">
                             <Border Width="38" Height="38" Margin="0,0,9,0" CornerRadius="11" Background="#FFF5E8">
