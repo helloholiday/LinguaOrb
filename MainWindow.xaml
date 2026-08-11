@@ -25,9 +25,16 @@
 
                 <Grid MouseLeftButtonDown="Header_MouseLeftButtonDown">
                     <StackPanel Margin="0,0,35,0">
-                        <TextBlock Text="LinguaOrb" FontSize="22" FontWeight="Bold" Foreground="{StaticResource InkBrush}"/>
-                        <TextBlock x:Name="ModeSubtitle" Text="把中文变成今天的新单词" Margin="0,3,0,8" FontSize="12" Foreground="#88829E"/>
-                        <UniformGrid Columns="4">
+                        <StackPanel Orientation="Horizontal">
+                            <Border Width="38" Height="38" Margin="0,0,9,0" CornerRadius="11" Background="#FFF5E8">
+                                <Image Source="Assets/luming-logo.png" Margin="3" Stretch="Uniform"/>
+                            </Border>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="鹿鸣 · LinguaOrb" FontSize="20" FontWeight="Bold" Foreground="{StaticResource InkBrush}"/>
+                                <TextBlock x:Name="ModeSubtitle" Text="把中文变成今天的新单词" Margin="0,2,0,0" FontSize="11" Foreground="#88829E"/>
+                            </StackPanel>
+                        </StackPanel>
+                        <UniformGrid Columns="4" Margin="0,8,0,0">
                             <Button x:Name="ZhWordModeButton" Content="中→英" Height="28" FontSize="11"
                                     Click="ZhWordMode_Click" Background="#7C63D9" Foreground="White" BorderThickness="0"/>
                             <Button x:Name="EnWordModeButton" Content="英→中" Height="28" FontSize="11"
@@ -126,14 +133,12 @@
                 ToolTip="打开 LinguaOrb">
             <Button.Template>
                 <ControlTemplate TargetType="Button">
-                    <Border CornerRadius="33" Background="#7C63D9">
+                    <Border CornerRadius="33" Background="#FFF7EA" BorderBrush="#7C63D9" BorderThickness="2">
                         <Border.Effect>
                             <DropShadowEffect BlurRadius="18" ShadowDepth="5" Opacity=".35" Color="#5948A5"/>
                         </Border.Effect>
                         <Grid>
-                            <Ellipse Margin="9" Fill="#927EE3"/>
-                            <TextBlock Text="译" Foreground="White" FontWeight="Bold" FontSize="25"
-                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <Image Source="Assets/luming-logo.png" Margin="7" Stretch="Uniform"/>
                         </Grid>
                     </Border>
                 </ControlTemplate>

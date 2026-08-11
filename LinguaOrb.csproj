@@ -6,9 +6,10 @@
     <TargetPlatformDisplayName>Windows</TargetPlatformDisplayName>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <ApplicationIcon />
+    <ApplicationIcon>Assets\luming.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <Resource Include="Assets\owl.png" />
+    <Resource Include="Assets\luming-logo.png" />
   </ItemGroup>
 </Project>
