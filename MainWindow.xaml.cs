@@ -19,7 +19,8 @@ public partial class MainWindow : Window
         ZhWordToEnglish,
         EnWordToChinese,
         ZhParagraphToEnglish,
-        EnParagraphToChinese
+        EnParagraphToChinese,
+        DailyReading
     }
     private enum TranslationApiKind { GoogleSingle, GoogleArray, MyMemory, Lingva }
 
@@ -59,6 +60,20 @@ public partial class MainWindow : Window
     private BitmapImage[] _deerAnimationFrames = [];
     private int _deerAnimationStep;
     private static readonly int[] DeerAnimationSequence = [0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 2, 1];
+    private sealed class DailyWord
+    {
+        public string Word { get; set; } = "";
+        public string Ipa { get; set; } = "";
+        public bool Completed { get; set; }
+    }
+    private sealed class DailyWordFile
+    {
+        public string Date { get; set; } = "";
+        public List<DailyWord> Words { get; set; } = [];
+    }
+    private readonly List<DailyWord> _dailyWords = [];
+    private readonly string _dailyWordsPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LinguaOrb", "daily-words.json");
     private readonly List<TranslationProvider> _providers =
     [
         new("Google 全球", TranslationApiKind.GoogleSingle, "https://translate.googleapis.com/translate_a/single"),
@@ -114,6 +129,7 @@ public partial class MainWindow : Window
         ];
         _deerAnimationTimer.Tick += DeerAnimationTimer_Tick;
         _deerAnimationTimer.Start();
+        LoadDailyWords();
     }
 
     private static BitmapImage LoadResourceBitmap(string path)
@@ -455,14 +471,21 @@ public partial class MainWindow : Window
 
     private void EnParagraphMode_Click(object sender, RoutedEventArgs e) => SetAssistantMode(AssistantMode.EnParagraphToChinese);
 
+    private void DailyReadingMode_Click(object sender, RoutedEventArgs e) => SetAssistantMode(AssistantMode.DailyReading);
+
     private void SetAssistantMode(AssistantMode mode)
     {
         _mode = mode;
+        var dailyReading = mode == AssistantMode.DailyReading;
         var paragraph = mode is AssistantMode.ZhParagraphToEnglish or AssistantMode.EnParagraphToChinese;
+        InputPanel.Visibility = dailyReading ? Visibility.Collapsed : Visibility.Visible;
+        TranslateButton.Visibility = dailyReading ? Visibility.Collapsed : Visibility.Visible;
         WordResultCard.Visibility = paragraph ? Visibility.Collapsed : Visibility.Visible;
-        StatusText.Visibility = paragraph ? Visibility.Collapsed : Visibility.Visible;
-        IllustrationImage.Visibility = paragraph ? Visibility.Collapsed : Visibility.Visible;
+        WordResultCard.Visibility = paragraph || dailyReading ? Visibility.Collapsed : Visibility.Visible;
+        StatusText.Visibility = paragraph || dailyReading ? Visibility.Collapsed : Visibility.Visible;
+        IllustrationImage.Visibility = paragraph || dailyReading ? Visibility.Collapsed : Visibility.Visible;
         ParagraphResultCard.Visibility = paragraph ? Visibility.Visible : Visibility.Collapsed;
+        DailyReadingCard.Visibility = dailyReading ? Visibility.Visible : Visibility.Collapsed;
         SpeakButton.Visibility = mode == AssistantMode.EnWordToChinese || mode == AssistantMode.ZhWordToEnglish
             ? Visibility.Visible
             : Visibility.Collapsed;
@@ -471,6 +494,7 @@ public partial class MainWindow : Window
         StyleModeButton(EnWordModeButton, mode == AssistantMode.EnWordToChinese);
         StyleModeButton(ParagraphModeButton, mode == AssistantMode.ZhParagraphToEnglish);
         StyleModeButton(EnParagraphModeButton, mode == AssistantMode.EnParagraphToChinese);
+        StyleModeButton(DailyReadingModeButton, dailyReading);
 
         switch (mode)
         {
@@ -494,8 +518,12 @@ public partial class MainWindow : Window
                 InputBox.ToolTip = "输入英文段落，可包含多句话";
                 TranslateButton.Content = "拆句并翻译";
                 break;
+            case AssistantMode.DailyReading:
+                ModeSubtitle.Text = "每日单词晨读清单 · 最多 20 个";
+                RefreshDailyWordsPanel();
+                break;
         }
-        InputBox.Focus();
+        if (!dailyReading) InputBox.Focus();
     }
 
     private static void StyleModeButton(Button button, bool selected)
@@ -545,6 +573,8 @@ public partial class MainWindow : Window
                     break;
                 case AssistantMode.EnParagraphToChinese:
                     await TranslateEnglishParagraphAsync(input);
+                    break;
+                case AssistantMode.DailyReading:
                     break;
             }
         }
@@ -1102,6 +1132,7 @@ public partial class MainWindow : Window
         PhonicsText.Text = $"自然拼读：{phonics}";
         _currentWord = pronunciationWord;
         _dictionaryAudioUrl = audioUrl;
+        AddDailyWord(pronunciationWord, ipa);
         StatusText.Text = $"{source} · 正在预加载发音";
         _ = PrepareAudioAsync(pronunciationWord, audioUrl);
         _ = LoadIllustrationAsync(pronunciationWord);
@@ -1186,6 +1217,143 @@ public partial class MainWindow : Window
         {
             StatusText.Text = "发音加载失败，请检查网络";
         }
+    }
+
+    private void LoadDailyWords()
+    {
+        try
+        {
+            if (!File.Exists(_dailyWordsPath)) return;
+            var saved = JsonSerializer.Deserialize<DailyWordFile>(File.ReadAllText(_dailyWordsPath));
+            if (saved?.Date == DateTime.Today.ToString("yyyy-MM-dd"))
+                _dailyWords.AddRange(saved.Words.Take(20));
+        }
+        catch { }
+        RefreshDailyWordsPanel();
+    }
+
+    private void SaveDailyWords()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(_dailyWordsPath)!);
+            var data = new DailyWordFile { Date = DateTime.Today.ToString("yyyy-MM-dd"), Words = _dailyWords };
+            File.WriteAllText(_dailyWordsPath, JsonSerializer.Serialize(data));
+        }
+        catch { }
+    }
+
+    private void AddDailyWord(string word, string ipa)
+    {
+        word = Regex.Replace(word.Trim(), @"\s+", " ");
+        if (string.IsNullOrWhiteSpace(word) || _dailyWords.Any(item =>
+                item.Word.Equals(word, StringComparison.OrdinalIgnoreCase))) return;
+        if (_dailyWords.Count >= 20) return;
+        _dailyWords.Add(new DailyWord { Word = word, Ipa = ipa });
+        SaveDailyWords();
+        RefreshDailyWordsPanel();
+    }
+
+    private void RefreshDailyWordsPanel()
+    {
+        if (DailyWordsPanel is null) return;
+        DailyWordsPanel.Children.Clear();
+        DailyReadingTitle.Text = $"今日晨读 · {_dailyWords.Count}/20";
+        if (_dailyWords.Count == 0)
+        {
+            DailyWordsPanel.Children.Add(new TextBlock
+            {
+                Text = "今天还没有单词，先去查询几个吧",
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(0, 38, 0, 0), Foreground = BrushFrom("#8D86A0")
+            });
+            return;
+        }
+
+        foreach (var item in _dailyWords)
+        {
+            var check = new CheckBox { IsChecked = item.Completed, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) };
+            check.Checked += (_, _) => { item.Completed = true; SaveDailyWords(); };
+            check.Unchecked += (_, _) => { item.Completed = false; SaveDailyWords(); };
+            var wordBlock = new TextBlock { Text = item.Word, FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = BrushFrom("#403958") };
+            var ipaBlock = new TextBlock { Text = item.Ipa, FontSize = 10, Foreground = BrushFrom("#8D86A0") };
+            var text = new StackPanel();
+            text.Children.Add(wordBlock);
+            text.Children.Add(ipaBlock);
+            var speaker = new Button
+            {
+                Content = "🔊", Tag = item.Word, Width = 38, Height = 32,
+                HorizontalAlignment = HorizontalAlignment.Right, Background = BrushFrom("#FFF1EB"), BorderThickness = new Thickness(0)
+            };
+            speaker.Click += DailyWordSpeak_Click;
+            var row = new Grid();
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            Grid.SetColumn(check, 0); Grid.SetColumn(text, 1); Grid.SetColumn(speaker, 2);
+            row.Children.Add(check); row.Children.Add(text); row.Children.Add(speaker);
+            DailyWordsPanel.Children.Add(new Border
+            {
+                Child = row, Padding = new Thickness(10, 7, 8, 7), Margin = new Thickness(0, 0, 0, 6),
+                Background = BrushFrom("#FFFFFF"), BorderBrush = BrushFrom("#E6E0F3"),
+                BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(10)
+            });
+        }
+    }
+
+    private async void DailyWordSpeak_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string word } button) return;
+        button.IsEnabled = false;
+        button.Content = "⏳";
+        try
+        {
+            var directory = Path.Combine(Path.GetTempPath(), "LinguaOrb", "daily");
+            Directory.CreateDirectory(directory);
+            var safeName = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(word)))[..16];
+            var path = Path.Combine(directory, $"{safeName}.mp3");
+            if (!File.Exists(path))
+            {
+                var preferred = _audioProviders[_selectedAudioProviderIndex];
+                var candidates = new[] { preferred }
+                    .Concat(_audioProviders.Where(provider => provider != preferred && provider.Available).OrderBy(provider => provider.LatencyMs))
+                    .Concat(_audioProviders.Where(provider => provider != preferred && !provider.Available))
+                    .Distinct();
+                byte[]? bytes = null;
+                foreach (var provider in candidates)
+                {
+                    try
+                    {
+                        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(7));
+                        bytes = await GetAudioBytesAsync(provider, word, null, timeout.Token);
+                        _selectedAudioProviderIndex = _audioProviders.IndexOf(provider);
+                        break;
+                    }
+                    catch { }
+                }
+                if (bytes is null) throw new InvalidOperationException("No audio provider is available.");
+                await File.WriteAllBytesAsync(path, bytes);
+            }
+            _player.Stop();
+            _player.Open(new Uri(path, UriKind.Absolute));
+            _player.Play();
+        }
+        catch
+        {
+            button.ToolTip = "发音节点暂时不可用，请稍后重试";
+        }
+        finally
+        {
+            button.Content = "🔊";
+            button.IsEnabled = true;
+        }
+    }
+
+    private void ClearDailyWords_Click(object sender, RoutedEventArgs e)
+    {
+        _dailyWords.Clear();
+        SaveDailyWords();
+        RefreshDailyWordsPanel();
     }
 
     private void Header_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)

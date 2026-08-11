@@ -34,7 +34,7 @@
                                 <TextBlock x:Name="ModeSubtitle" Text="把中文变成今天的新单词" Margin="0,2,0,0" FontSize="11" Foreground="#88829E"/>
                             </StackPanel>
                         </StackPanel>
-                        <UniformGrid Columns="4" Margin="0,8,0,0">
+                        <UniformGrid Columns="5" Margin="0,8,0,0">
                             <Button x:Name="ZhWordModeButton" Content="中→英" Height="28" FontSize="11"
                                     Click="ZhWordMode_Click" Background="#7C63D9" Foreground="White" BorderThickness="0"/>
                             <Button x:Name="EnWordModeButton" Content="英→中" Height="28" FontSize="11"
@@ -43,6 +43,8 @@
                                     Click="ParagraphMode_Click" Background="#EEEAF8" Foreground="#655E74" BorderThickness="0"/>
                             <Button x:Name="EnParagraphModeButton" Content="英段→中" Height="28" FontSize="10"
                                     Click="EnParagraphMode_Click" Background="#EEEAF8" Foreground="#655E74" BorderThickness="0"/>
+                            <Button x:Name="DailyReadingModeButton" Content="晨读" Height="28" FontSize="10"
+                                    Click="DailyReadingMode_Click" Background="#EEEAF8" Foreground="#655E74" BorderThickness="0"/>
                         </UniformGrid>
                     </StackPanel>
                     <Button Content="×" HorizontalAlignment="Right" VerticalAlignment="Top"
@@ -50,7 +52,7 @@
                             Background="Transparent" BorderThickness="0" Foreground="#8F88A8"/>
                 </Grid>
 
-                <Border Grid.Row="1" Margin="0,12,0,12" CornerRadius="14" Background="#F4F1FC"
+                <Border x:Name="InputPanel" Grid.Row="1" Margin="0,12,0,12" CornerRadius="14" Background="#F4F1FC"
                         BorderBrush="#E2DAF8" BorderThickness="1">
                     <TextBox x:Name="InputBox" Margin="14,11" MinHeight="42" MaxHeight="90"
                              FontSize="16" TextWrapping="Wrap" AcceptsReturn="True"
@@ -109,6 +111,28 @@
                                        Margin="0,18" Foreground="#8D86A0" FontSize="12"/>
                         </StackPanel>
                     </ScrollViewer>
+                </Border>
+
+                <Border x:Name="DailyReadingCard" Grid.Row="1" Grid.RowSpan="5" Visibility="Collapsed"
+                        Margin="0,12,0,0" Padding="12" CornerRadius="16" Background="#F8F6FD"
+                        BorderBrush="#E2DAF8" BorderThickness="1">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <Grid>
+                            <StackPanel>
+                                <TextBlock x:Name="DailyReadingTitle" Text="今日晨读 · 0/20" FontSize="15" FontWeight="Bold" Foreground="#4C4564"/>
+                                <TextBlock Text="查询成功的英文词会自动加入；点击喇叭跟读" Margin="0,3,0,8" FontSize="10" Foreground="#8D86A0"/>
+                            </StackPanel>
+                            <Button Content="清空" HorizontalAlignment="Right" VerticalAlignment="Top" Padding="9,4"
+                                    Click="ClearDailyWords_Click" Background="#FFF1EB" Foreground="#B85B4B" BorderThickness="0"/>
+                        </Grid>
+                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                            <StackPanel x:Name="DailyWordsPanel"/>
+                        </ScrollViewer>
+                    </Grid>
                 </Border>
             </Grid>
         </Border>
