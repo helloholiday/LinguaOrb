@@ -27,13 +27,15 @@
                     <StackPanel Margin="0,0,35,0">
                         <TextBlock Text="LinguaOrb" FontSize="22" FontWeight="Bold" Foreground="{StaticResource InkBrush}"/>
                         <TextBlock x:Name="ModeSubtitle" Text="把中文变成今天的新单词" Margin="0,3,0,8" FontSize="12" Foreground="#88829E"/>
-                        <UniformGrid Columns="3">
+                        <UniformGrid Columns="4">
                             <Button x:Name="ZhWordModeButton" Content="中→英" Height="28" FontSize="11"
                                     Click="ZhWordMode_Click" Background="#7C63D9" Foreground="White" BorderThickness="0"/>
                             <Button x:Name="EnWordModeButton" Content="英→中" Height="28" FontSize="11"
                                     Click="EnWordMode_Click" Background="#EEEAF8" Foreground="#655E74" BorderThickness="0"/>
-                            <Button x:Name="ParagraphModeButton" Content="段落" Height="28" FontSize="11"
+                            <Button x:Name="ParagraphModeButton" Content="中段→英" Height="28" FontSize="10"
                                     Click="ParagraphMode_Click" Background="#EEEAF8" Foreground="#655E74" BorderThickness="0"/>
+                            <Button x:Name="EnParagraphModeButton" Content="英段→中" Height="28" FontSize="10"
+                                    Click="EnParagraphMode_Click" Background="#EEEAF8" Foreground="#655E74" BorderThickness="0"/>
                         </UniformGrid>
                     </StackPanel>
                     <Button Content="×" HorizontalAlignment="Right" VerticalAlignment="Top"

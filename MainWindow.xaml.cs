@@ -14,7 +14,13 @@ namespace LinguaOrb;
 
 public partial class MainWindow : Window
 {
-    private enum AssistantMode { ZhWordToEnglish, EnWordToChinese, ZhParagraphToEnglish }
+    private enum AssistantMode
+    {
+        ZhWordToEnglish,
+        EnWordToChinese,
+        ZhParagraphToEnglish,
+        EnParagraphToChinese
+    }
     private enum TranslationApiKind { GoogleSingle, GoogleArray, MyMemory, Lingva }
 
     private sealed class TranslationProvider(string name, TranslationApiKind kind, string endpoint)
@@ -415,10 +421,12 @@ public partial class MainWindow : Window
 
     private void ParagraphMode_Click(object sender, RoutedEventArgs e) => SetAssistantMode(AssistantMode.ZhParagraphToEnglish);
 
+    private void EnParagraphMode_Click(object sender, RoutedEventArgs e) => SetAssistantMode(AssistantMode.EnParagraphToChinese);
+
     private void SetAssistantMode(AssistantMode mode)
     {
         _mode = mode;
-        var paragraph = mode == AssistantMode.ZhParagraphToEnglish;
+        var paragraph = mode is AssistantMode.ZhParagraphToEnglish or AssistantMode.EnParagraphToChinese;
         WordResultCard.Visibility = paragraph ? Visibility.Collapsed : Visibility.Visible;
         StatusText.Visibility = paragraph ? Visibility.Collapsed : Visibility.Visible;
         IllustrationImage.Visibility = paragraph ? Visibility.Collapsed : Visibility.Visible;
@@ -429,7 +437,8 @@ public partial class MainWindow : Window
 
         StyleModeButton(ZhWordModeButton, mode == AssistantMode.ZhWordToEnglish);
         StyleModeButton(EnWordModeButton, mode == AssistantMode.EnWordToChinese);
-        StyleModeButton(ParagraphModeButton, paragraph);
+        StyleModeButton(ParagraphModeButton, mode == AssistantMode.ZhParagraphToEnglish);
+        StyleModeButton(EnParagraphModeButton, mode == AssistantMode.EnParagraphToChinese);
 
         switch (mode)
         {
@@ -448,6 +457,11 @@ public partial class MainWindow : Window
                 InputBox.ToolTip = "输入中文段落，可包含多句话";
                 TranslateButton.Content = "拆句并翻译";
                 break;
+            case AssistantMode.EnParagraphToChinese:
+                ModeSubtitle.Text = "英文段落 → 逐句英中对照与语法结构";
+                InputBox.ToolTip = "输入英文段落，可包含多句话";
+                TranslateButton.Content = "拆句并翻译";
+                break;
         }
         InputBox.Focus();
     }
@@ -463,12 +477,12 @@ public partial class MainWindow : Window
         var input = InputBox.Text.Trim();
         if (string.IsNullOrWhiteSpace(input))
         {
-            if (_mode == AssistantMode.ZhParagraphToEnglish)
+            if (_mode is AssistantMode.ZhParagraphToEnglish or AssistantMode.EnParagraphToChinese)
             {
                 ParagraphResultsPanel.Children.Clear();
                 ParagraphResultsPanel.Children.Add(new TextBlock
                 {
-                    Text = "请先输入中文段落",
+                    Text = _mode == AssistantMode.EnParagraphToChinese ? "请先输入英文段落" : "请先输入中文段落",
                     HorizontalAlignment = HorizontalAlignment.Center,
                     Margin = new Thickness(0, 18, 0, 0),
                     Foreground = BrushFrom("#8D86A0")
@@ -497,11 +511,14 @@ public partial class MainWindow : Window
                 case AssistantMode.ZhParagraphToEnglish:
                     await TranslateParagraphAsync(input);
                     break;
+                case AssistantMode.EnParagraphToChinese:
+                    await TranslateEnglishParagraphAsync(input);
+                    break;
             }
         }
         catch
         {
-            if (_mode == AssistantMode.ZhParagraphToEnglish)
+            if (_mode is AssistantMode.ZhParagraphToEnglish or AssistantMode.EnParagraphToChinese)
                 AddParagraphMessage("翻译中断：当前所有翻译节点均不可用");
             else
                 StatusText.Text = "当前翻译节点暂不可用，请稍后重试";
@@ -509,7 +526,9 @@ public partial class MainWindow : Window
         finally
         {
             TranslateButton.IsEnabled = true;
-            TranslateButton.Content = _mode == AssistantMode.ZhParagraphToEnglish ? "拆句并翻译" : "翻  译";
+            TranslateButton.Content = _mode is AssistantMode.ZhParagraphToEnglish or AssistantMode.EnParagraphToChinese
+                ? "拆句并翻译"
+                : "翻  译";
         }
     }
 
@@ -566,7 +585,36 @@ public partial class MainWindow : Window
             TranslateButton.Content = $"翻译中 {index + 1}/{sentences.Count}";
             var english = await TranslateAsync(sentences[index], "zh-CN", "en", preservePunctuation: true);
             if (index == 0) ParagraphResultsPanel.Children.Clear();
-            AddSentenceResult(index + 1, sentences[index], english, AnalyzeGrammarStructure(english));
+            AddSentenceResult(
+                index + 1,
+                "中文", sentences[index],
+                "English", english,
+                AnalyzeGrammarStructure(english));
+        }
+        TranslateButton.Content = "拆句并翻译";
+    }
+
+    private async Task TranslateEnglishParagraphAsync(string paragraph)
+    {
+        var sentences = CleanEnglishSentences(paragraph).Take(30).ToList();
+        ParagraphResultsPanel.Children.Clear();
+        if (sentences.Count == 0)
+        {
+            AddParagraphMessage("没有识别到可翻译的英文句子");
+            return;
+        }
+
+        AddParagraphMessage($"已清洗为 {sentences.Count} 个句子，正在逐句翻译…");
+        for (var index = 0; index < sentences.Count; index++)
+        {
+            TranslateButton.Content = $"翻译中 {index + 1}/{sentences.Count}";
+            var chinese = await TranslateAsync(sentences[index], "en", "zh-CN", preservePunctuation: true);
+            if (index == 0) ParagraphResultsPanel.Children.Clear();
+            AddSentenceResult(
+                index + 1,
+                "English", sentences[index],
+                "中文", chinese,
+                AnalyzeGrammarStructure(sentences[index]));
         }
         TranslateButton.Content = "拆句并翻译";
     }
@@ -585,6 +633,21 @@ public partial class MainWindow : Window
         }
     }
 
+    private static IEnumerable<string> CleanEnglishSentences(string paragraph)
+    {
+        var normalized = paragraph
+            .Replace("\r\n", "\n")
+            .Replace('\r', '\n');
+        foreach (var raw in Regex.Split(normalized, @"(?<=[.!?;])|\n+"))
+        {
+            var sentence = Regex.Replace(raw, @"\s+", " ").Trim().Trim(',', ';');
+            if (string.IsNullOrWhiteSpace(sentence)) continue;
+            sentence = char.ToUpperInvariant(sentence[0]) + sentence[1..];
+            if (!Regex.IsMatch(sentence, @"[.!?]$")) sentence += ".";
+            yield return sentence;
+        }
+    }
+
     private void AddParagraphMessage(string message)
     {
         ParagraphResultsPanel.Children.Add(new TextBlock
@@ -598,19 +661,25 @@ public partial class MainWindow : Window
         });
     }
 
-    private void AddSentenceResult(int number, string chinese, string english, string grammar)
+    private void AddSentenceResult(
+        int number,
+        string sourceLabel,
+        string sourceText,
+        string targetLabel,
+        string targetText,
+        string grammar)
     {
         var content = new StackPanel();
         content.Children.Add(new TextBlock
         {
-            Text = $"{number}. 中文",
+            Text = $"{number}. {sourceLabel}",
             FontSize = 10,
             FontWeight = FontWeights.SemiBold,
             Foreground = BrushFrom("#8A8299")
         });
         content.Children.Add(new TextBlock
         {
-            Text = chinese,
+            Text = sourceText,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 3, 0, 8),
             FontSize = 13,
@@ -618,14 +687,14 @@ public partial class MainWindow : Window
         });
         content.Children.Add(new TextBlock
         {
-            Text = "English",
+            Text = targetLabel,
             FontSize = 10,
             FontWeight = FontWeights.SemiBold,
             Foreground = BrushFrom("#8A8299")
         });
         content.Children.Add(new TextBlock
         {
-            Text = english,
+            Text = targetText,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 3, 0, 8),
             FontSize = 13,
