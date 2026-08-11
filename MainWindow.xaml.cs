@@ -14,11 +14,39 @@ namespace LinguaOrb;
 
 public partial class MainWindow : Window
 {
+    private enum TranslationApiKind { GoogleSingle, GoogleArray, MyMemory, Lingva }
+
+    private sealed class TranslationProvider(string name, TranslationApiKind kind, string endpoint)
+    {
+        public string Name { get; } = name;
+        public TranslationApiKind Kind { get; } = kind;
+        public string Endpoint { get; } = endpoint;
+        public bool Available { get; set; }
+        public long LatencyMs { get; set; } = long.MaxValue;
+        public Border? Tile { get; set; }
+        public TextBlock? NameText { get; set; }
+        public TextBlock? LatencyText { get; set; }
+    }
+
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(8) };
     private readonly MediaPlayer _player = new();
     private string? _audioUrl;
     private int _imageRequestId;
-    private readonly DispatcherTimer _healthTimer = new() { Interval = TimeSpan.FromSeconds(15) };
+    private readonly DispatcherTimer _healthTimer = new() { Interval = TimeSpan.FromSeconds(60) };
+    private readonly List<TranslationProvider> _providers =
+    [
+        new("Google 全球", TranslationApiKind.GoogleSingle, "https://translate.googleapis.com/translate_a/single"),
+        new("Google Web", TranslationApiKind.GoogleSingle, "https://translate.google.com/translate_a/single"),
+        new("Google 轻量", TranslationApiKind.GoogleArray, "https://clients5.google.com/translate_a/t"),
+        new("MyMemory", TranslationApiKind.MyMemory, "https://api.mymemory.translated.net/get"),
+        new("Lingva 官方", TranslationApiKind.Lingva, "https://lingva.ml"),
+        new("Lingva 欧洲", TranslationApiKind.Lingva, "https://translate.plausibility.cloud"),
+        new("Lingva 社区", TranslationApiKind.Lingva, "https://translate.projectsegfau.lt"),
+        new("Lingva Garuda", TranslationApiKind.Lingva, "https://lingva.garudalinux.org"),
+        new("Lingva Lunar", TranslationApiKind.Lingva, "https://lingva.lunar.icu"),
+        new("Lingva Jae", TranslationApiKind.Lingva, "https://translate.jae.fi")
+    ];
+    private int _selectedProviderIndex;
     private readonly Dictionary<string, (string Word, string Ipa, string Phonics)> _offline = new()
     {
         ["蝴蝶"] = ("butterfly", "/ˈbʌtəflaɪ/", "but · ter · fly"),
@@ -33,6 +61,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        BuildProviderTiles();
         _healthTimer.Tick += async (_, _) => await RefreshApiStatusAsync();
     }
 
@@ -64,16 +93,19 @@ public partial class MainWindow : Window
         _healthTimer.Stop();
         try
         {
-            await Task.WhenAll(
-                ProbeApiAsync(
-                    "https://api.mymemory.translated.net/get?q=%E8%8B%B9%E6%9E%9C&langpair=zh-CN|en",
-                    TranslateApiTile, TranslatePingText),
-                ProbeApiAsync(
-                    "https://api.dictionaryapi.dev/api/v2/entries/en/apple",
-                    DictionaryApiTile, DictionaryPingText),
-                ProbeApiAsync(
-                    "https://commons.wikimedia.org/w/api.php?action=query&format=json&meta=siteinfo&siprop=general&origin=*",
-                    ImageApiTile, ImagePingText));
+            await Task.WhenAll(_providers.Select(ProbeProviderAsync));
+
+            if (!_providers[_selectedProviderIndex].Available)
+            {
+                var fastest = _providers
+                    .Select((provider, index) => (provider, index))
+                    .Where(item => item.provider.Available)
+                    .OrderBy(item => item.provider.LatencyMs)
+                    .FirstOrDefault();
+                if (fastest.provider is not null)
+                    _selectedProviderIndex = fastest.index;
+            }
+            UpdateAllProviderTiles();
         }
         finally
         {
@@ -82,42 +114,116 @@ public partial class MainWindow : Window
         }
     }
 
-    private static async Task ProbeApiAsync(string url, Border tile, TextBlock label)
+    private void BuildProviderTiles()
     {
-        label.Text = "检测中";
-        SetTileColor(tile, label, "#F5F2FA", "#DDD7E8", "#8A8299");
+        TranslationNodesPanel.Children.Clear();
+        for (var index = 0; index < _providers.Count; index++)
+        {
+            var provider = _providers[index];
+            var nameText = new TextBlock
+            {
+                Text = provider.Name,
+                FontSize = 9,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            var latencyText = new TextBlock
+            {
+                Text = "检测中",
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Margin = new Thickness(0, 2, 0, 0),
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+            var tile = new Border
+            {
+                Tag = index,
+                Height = 44,
+                Margin = new Thickness(0, 0, 0, 4),
+                Padding = new Thickness(3, 5, 3, 4),
+                CornerRadius = new CornerRadius(9),
+                BorderThickness = new Thickness(1),
+                Cursor = Cursors.Hand,
+                Child = new StackPanel { Children = { nameText, latencyText } }
+            };
+            tile.MouseLeftButtonUp += ProviderTile_Click;
+            provider.Tile = tile;
+            provider.NameText = nameText;
+            provider.LatencyText = latencyText;
+            TranslationNodesPanel.Children.Add(tile);
+        }
+        UpdateAllProviderTiles();
+    }
+
+    private async Task ProbeProviderAsync(TranslationProvider provider)
+    {
+        provider.LatencyText!.Text = "检测中";
+        provider.Available = false;
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         var stopwatch = Stopwatch.StartNew();
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            var translated = await TranslateWithProviderAsync(provider, "苹果", timeout.Token);
             stopwatch.Stop();
-            var milliseconds = stopwatch.ElapsedMilliseconds;
-
-            if (!response.IsSuccessStatusCode)
-                throw new HttpRequestException($"HTTP {(int)response.StatusCode}");
-
-            label.Text = $"{milliseconds} ms";
-            if (milliseconds < 500)
-                SetTileColor(tile, label, "#E8F7EF", "#55B985", "#27845A");
-            else if (milliseconds < 1500)
-                SetTileColor(tile, label, "#FFF6DF", "#E7B94A", "#A87300");
-            else
-                SetTileColor(tile, label, "#FFF0E8", "#E99163", "#B85B2C");
+            provider.Available = !string.IsNullOrWhiteSpace(translated);
+            provider.LatencyMs = stopwatch.ElapsedMilliseconds;
         }
         catch
         {
+            provider.Available = false;
+            provider.LatencyMs = long.MaxValue;
+        }
+        UpdateProviderTile(provider, _providers[_selectedProviderIndex] == provider);
+    }
+
+    private void ProviderTile_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not Border { Tag: int index } || !_providers[index].Available) return;
+        _selectedProviderIndex = index;
+        UpdateAllProviderTiles();
+        StatusText.Text = $"已切换到 {_providers[index].Name} · {_providers[index].LatencyMs} ms";
+    }
+
+    private void UpdateAllProviderTiles()
+    {
+        for (var index = 0; index < _providers.Count; index++)
+            UpdateProviderTile(_providers[index], index == _selectedProviderIndex);
+    }
+
+    private static void UpdateProviderTile(TranslationProvider provider, bool selected)
+    {
+        var tile = provider.Tile!;
+        var label = provider.LatencyText!;
+        provider.NameText!.Text = selected ? $"✓ {provider.Name}" : provider.Name;
+
+        if (!provider.Available)
+        {
             label.Text = "不可用";
-            SetTileColor(tile, label, "#FDEBEC", "#DD7A82", "#B53B46");
+            SetTileColor(tile, label, "#FDEBEC", selected ? "#7C63D9" : "#DD7A82", "#B53B46", selected ? 2 : 1);
+        }
+        else if (provider.LatencyMs < 500)
+        {
+            label.Text = $"{provider.LatencyMs} ms";
+            SetTileColor(tile, label, "#E8F7EF", selected ? "#7C63D9" : "#55B985", "#27845A", selected ? 2 : 1);
+        }
+        else if (provider.LatencyMs < 1500)
+        {
+            label.Text = $"{provider.LatencyMs} ms";
+            SetTileColor(tile, label, "#FFF6DF", selected ? "#7C63D9" : "#E7B94A", "#A87300", selected ? 2 : 1);
+        }
+        else
+        {
+            label.Text = $"{provider.LatencyMs} ms";
+            SetTileColor(tile, label, "#FFF0E8", selected ? "#7C63D9" : "#E99163", "#B85B2C", selected ? 2 : 1);
         }
     }
 
-    private static void SetTileColor(Border tile, TextBlock label, string background, string border, string text)
+    private static void SetTileColor(Border tile, TextBlock label, string background, string border, string text, double thickness)
     {
         tile.Background = (SolidColorBrush)new BrushConverter().ConvertFromString(background)!;
         tile.BorderBrush = (SolidColorBrush)new BrushConverter().ConvertFromString(border)!;
+        tile.BorderThickness = new Thickness(thickness);
         label.Foreground = (SolidColorBrush)new BrushConverter().ConvertFromString(text)!;
     }
 
@@ -163,11 +269,79 @@ public partial class MainWindow : Window
         }
     }
 
-    private static async Task<string> TranslateAsync(string text)
+    private async Task<string> TranslateAsync(string text)
     {
-        var url = $"https://api.mymemory.translated.net/get?q={Uri.EscapeDataString(text)}&langpair=zh-CN|en";
-        using var doc = JsonDocument.Parse(await Http.GetStringAsync(url));
-        var translated = doc.RootElement.GetProperty("responseData").GetProperty("translatedText").GetString();
+        var preferred = _providers[_selectedProviderIndex];
+        var candidates = new[] { preferred }
+            .Concat(_providers.Where(provider => provider != preferred && provider.Available).OrderBy(provider => provider.LatencyMs))
+            .Concat(_providers.Where(provider => provider != preferred && !provider.Available))
+            .Distinct();
+
+        foreach (var provider in candidates)
+        {
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+                var stopwatch = Stopwatch.StartNew();
+                var translated = await TranslateWithProviderAsync(provider, text, timeout.Token);
+                stopwatch.Stop();
+                provider.Available = true;
+                provider.LatencyMs = stopwatch.ElapsedMilliseconds;
+                _selectedProviderIndex = _providers.IndexOf(provider);
+                UpdateAllProviderTiles();
+                return NormalizeTranslation(translated);
+            }
+            catch
+            {
+                provider.Available = false;
+                provider.LatencyMs = long.MaxValue;
+                UpdateProviderTile(provider, _providers[_selectedProviderIndex] == provider);
+            }
+        }
+        throw new HttpRequestException("All translation providers failed.");
+    }
+
+    private static async Task<string> TranslateWithProviderAsync(
+        TranslationProvider provider, string text, CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(text);
+        string url;
+        switch (provider.Kind)
+        {
+            case TranslationApiKind.GoogleSingle:
+                url = $"{provider.Endpoint}?client=gtx&sl=zh-CN&tl=en&dt=t&q={encoded}";
+                break;
+            case TranslationApiKind.GoogleArray:
+                url = $"{provider.Endpoint}?client=dict-chrome&sl=zh-CN&tl=en&q={encoded}";
+                break;
+            case TranslationApiKind.MyMemory:
+                url = $"{provider.Endpoint}?q={encoded}&langpair=zh-CN|en";
+                break;
+            case TranslationApiKind.Lingva:
+                url = $"{provider.Endpoint}/api/v1/zh/en/{encoded}";
+                break;
+            default:
+                throw new NotSupportedException();
+        }
+
+        var json = await Http.GetStringAsync(url, cancellationToken);
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        return provider.Kind switch
+        {
+            TranslationApiKind.GoogleSingle => string.Concat(
+                root[0].EnumerateArray().Select(segment => segment[0].GetString())),
+            TranslationApiKind.GoogleArray => root[0].GetString() ?? throw new InvalidOperationException(),
+            TranslationApiKind.MyMemory => root.GetProperty("responseData").GetProperty("translatedText").GetString()
+                                           ?? throw new InvalidOperationException(),
+            TranslationApiKind.Lingva => root.GetProperty("translation").GetString()
+                                         ?? throw new InvalidOperationException(),
+            _ => throw new NotSupportedException()
+        };
+    }
+
+    private static string NormalizeTranslation(string translated)
+    {
         if (string.IsNullOrWhiteSpace(translated)) throw new InvalidOperationException("No translation.");
         return Regex.Replace(translated.Trim().ToLowerInvariant(), @"[^\p{L}\s'-]", "");
     }
