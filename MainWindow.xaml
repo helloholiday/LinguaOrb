@@ -24,25 +24,34 @@
                 </Grid.RowDefinitions>
 
                 <Grid MouseLeftButtonDown="Header_MouseLeftButtonDown">
-                    <StackPanel>
+                    <StackPanel Margin="0,0,35,0">
                         <TextBlock Text="LinguaOrb" FontSize="22" FontWeight="Bold" Foreground="{StaticResource InkBrush}"/>
-                        <TextBlock Text="把中文变成今天的新单词" Margin="0,3,0,0" FontSize="12" Foreground="#88829E"/>
+                        <TextBlock x:Name="ModeSubtitle" Text="把中文变成今天的新单词" Margin="0,3,0,8" FontSize="12" Foreground="#88829E"/>
+                        <UniformGrid Columns="3">
+                            <Button x:Name="ZhWordModeButton" Content="中→英" Height="28" FontSize="11"
+                                    Click="ZhWordMode_Click" Background="#7C63D9" Foreground="White" BorderThickness="0"/>
+                            <Button x:Name="EnWordModeButton" Content="英→中" Height="28" FontSize="11"
+                                    Click="EnWordMode_Click" Background="#EEEAF8" Foreground="#655E74" BorderThickness="0"/>
+                            <Button x:Name="ParagraphModeButton" Content="段落" Height="28" FontSize="11"
+                                    Click="ParagraphMode_Click" Background="#EEEAF8" Foreground="#655E74" BorderThickness="0"/>
+                        </UniformGrid>
                     </StackPanel>
                     <Button Content="×" HorizontalAlignment="Right" VerticalAlignment="Top"
                             Width="30" Height="30" FontSize="18" Click="Close_Click"
                             Background="Transparent" BorderThickness="0" Foreground="#8F88A8"/>
                 </Grid>
 
-                <Border Grid.Row="1" Margin="0,18,0,12" CornerRadius="14" Background="#F4F1FC"
+                <Border Grid.Row="1" Margin="0,12,0,12" CornerRadius="14" Background="#F4F1FC"
                         BorderBrush="#E2DAF8" BorderThickness="1">
-                    <TextBox x:Name="InputBox" Margin="14,11" MinHeight="42"
+                    <TextBox x:Name="InputBox" Margin="14,11" MinHeight="42" MaxHeight="90"
                              FontSize="16" TextWrapping="Wrap" AcceptsReturn="True"
+                             VerticalScrollBarVisibility="Auto"
                              BorderThickness="0" Background="Transparent"
                              Foreground="{StaticResource InkBrush}"
                              ToolTip="输入中文，例如：蝴蝶"/>
                 </Border>
 
-                <Button Grid.Row="2" Height="44" Content="翻  译" Click="Translate_Click"
+                <Button x:Name="TranslateButton" Grid.Row="2" Height="44" Content="翻  译" Click="Translate_Click"
                         FontSize="15" FontWeight="SemiBold" Foreground="White"
                         Background="{StaticResource PurpleBrush}" BorderThickness="0">
                     <Button.Template>
@@ -54,7 +63,7 @@
                     </Button.Template>
                 </Button>
 
-                <Border Grid.Row="3" Margin="0,16,0,0" Padding="16,13" CornerRadius="16" Background="#FFF1EB">
+                <Border x:Name="WordResultCard" Grid.Row="3" Margin="0,16,0,0" Padding="16,13" CornerRadius="16" Background="#FFF1EB">
                     <StackPanel>
                         <Grid>
                             <TextBlock x:Name="WordText" Text="butterfly" FontSize="26" FontWeight="Bold" Foreground="#E86855"/>
@@ -80,6 +89,17 @@
                             <TextBlock Text="正在寻找配图…" FontSize="10" Foreground="#716887"/>
                         </Border>
                     </Grid>
+                </Border>
+
+                <Border x:Name="ParagraphResultCard" Grid.Row="3" Grid.RowSpan="3" Visibility="Collapsed"
+                        Margin="0,16,0,0" Padding="12" CornerRadius="16" Background="#F8F6FD"
+                        BorderBrush="#E2DAF8" BorderThickness="1">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel x:Name="ParagraphResultsPanel">
+                            <TextBlock Text="输入中文段落后点击翻译" HorizontalAlignment="Center"
+                                       Margin="0,18" Foreground="#8D86A0" FontSize="12"/>
+                        </StackPanel>
+                    </ScrollViewer>
                 </Border>
             </Grid>
         </Border>

@@ -14,6 +14,7 @@ namespace LinguaOrb;
 
 public partial class MainWindow : Window
 {
+    private enum AssistantMode { ZhWordToEnglish, EnWordToChinese, ZhParagraphToEnglish }
     private enum TranslationApiKind { GoogleSingle, GoogleArray, MyMemory, Lingva }
 
     private sealed class TranslationProvider(string name, TranslationApiKind kind, string endpoint)
@@ -77,6 +78,7 @@ public partial class MainWindow : Window
     ];
     private int _selectedAudioProviderIndex;
     private bool _audioStatusInitialized;
+    private AssistantMode _mode = AssistantMode.ZhWordToEnglish;
     private readonly Dictionary<string, (string Word, string Ipa, string Phonics)> _offline = new()
     {
         ["蝴蝶"] = ("butterfly", "/ˈbʌtəflaɪ/", "but · ter · fly"),
@@ -407,33 +409,285 @@ public partial class MainWindow : Window
     private static SolidColorBrush BrushFrom(string color) =>
         (SolidColorBrush)new BrushConverter().ConvertFromString(color)!;
 
+    private void ZhWordMode_Click(object sender, RoutedEventArgs e) => SetAssistantMode(AssistantMode.ZhWordToEnglish);
+
+    private void EnWordMode_Click(object sender, RoutedEventArgs e) => SetAssistantMode(AssistantMode.EnWordToChinese);
+
+    private void ParagraphMode_Click(object sender, RoutedEventArgs e) => SetAssistantMode(AssistantMode.ZhParagraphToEnglish);
+
+    private void SetAssistantMode(AssistantMode mode)
+    {
+        _mode = mode;
+        var paragraph = mode == AssistantMode.ZhParagraphToEnglish;
+        WordResultCard.Visibility = paragraph ? Visibility.Collapsed : Visibility.Visible;
+        StatusText.Visibility = paragraph ? Visibility.Collapsed : Visibility.Visible;
+        IllustrationImage.Visibility = paragraph ? Visibility.Collapsed : Visibility.Visible;
+        ParagraphResultCard.Visibility = paragraph ? Visibility.Visible : Visibility.Collapsed;
+        SpeakButton.Visibility = mode == AssistantMode.EnWordToChinese || mode == AssistantMode.ZhWordToEnglish
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+        StyleModeButton(ZhWordModeButton, mode == AssistantMode.ZhWordToEnglish);
+        StyleModeButton(EnWordModeButton, mode == AssistantMode.EnWordToChinese);
+        StyleModeButton(ParagraphModeButton, paragraph);
+
+        switch (mode)
+        {
+            case AssistantMode.ZhWordToEnglish:
+                ModeSubtitle.Text = "中文词语 → 英文单词、音标与发音";
+                InputBox.ToolTip = "输入中文，例如：蝴蝶";
+                TranslateButton.Content = "翻  译";
+                break;
+            case AssistantMode.EnWordToChinese:
+                ModeSubtitle.Text = "英文词语 → 中文释义";
+                InputBox.ToolTip = "输入英文，例如：butterfly";
+                TranslateButton.Content = "翻  译";
+                break;
+            case AssistantMode.ZhParagraphToEnglish:
+                ModeSubtitle.Text = "中文段落 → 逐句中英对照与语法结构";
+                InputBox.ToolTip = "输入中文段落，可包含多句话";
+                TranslateButton.Content = "拆句并翻译";
+                break;
+        }
+        InputBox.Focus();
+    }
+
+    private static void StyleModeButton(Button button, bool selected)
+    {
+        button.Background = BrushFrom(selected ? "#7C63D9" : "#EEEAF8");
+        button.Foreground = BrushFrom(selected ? "#FFFFFF" : "#655E74");
+    }
+
     private async void Translate_Click(object sender, RoutedEventArgs e)
     {
-        var chinese = InputBox.Text.Trim();
-        if (string.IsNullOrWhiteSpace(chinese))
+        var input = InputBox.Text.Trim();
+        if (string.IsNullOrWhiteSpace(input))
         {
-            StatusText.Text = "请先输入一个中文词语";
+            if (_mode == AssistantMode.ZhParagraphToEnglish)
+            {
+                ParagraphResultsPanel.Children.Clear();
+                ParagraphResultsPanel.Children.Add(new TextBlock
+                {
+                    Text = "请先输入中文段落",
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    Margin = new Thickness(0, 18, 0, 0),
+                    Foreground = BrushFrom("#8D86A0")
+                });
+            }
+            else
+            {
+                StatusText.Text = _mode == AssistantMode.EnWordToChinese
+                    ? "请先输入一个英文词语"
+                    : "请先输入一个中文词语";
+            }
             return;
         }
 
-        StatusText.Text = "正在查找最自然的表达…";
+        TranslateButton.IsEnabled = false;
         try
         {
-            if (_offline.TryGetValue(chinese, out var known))
+            switch (_mode)
             {
-                var knownAudioUrl = await TryGetAudioAsync(known.Word);
-                ShowResult(known.Word, known.Ipa, known.Phonics, "本地精选词条", knownAudioUrl);
-                return;
+                case AssistantMode.ZhWordToEnglish:
+                    await TranslateChineseWordAsync(input);
+                    break;
+                case AssistantMode.EnWordToChinese:
+                    await TranslateEnglishWordAsync(input);
+                    break;
+                case AssistantMode.ZhParagraphToEnglish:
+                    await TranslateParagraphAsync(input);
+                    break;
             }
-
-            var word = await TranslateAsync(chinese);
-            var (ipa, audioUrl) = await GetPronunciationAsync(word);
-            ShowResult(word, ipa ?? "IPA 暂未收录", BuildPhonics(word), "在线翻译与英英词典", audioUrl);
         }
         catch
         {
-            StatusText.Text = "网络暂不可用，请试试：蝴蝶、苹果、快乐、朋友";
+            if (_mode == AssistantMode.ZhParagraphToEnglish)
+                AddParagraphMessage("翻译中断：当前所有翻译节点均不可用");
+            else
+                StatusText.Text = "当前翻译节点暂不可用，请稍后重试";
         }
+        finally
+        {
+            TranslateButton.IsEnabled = true;
+            TranslateButton.Content = _mode == AssistantMode.ZhParagraphToEnglish ? "拆句并翻译" : "翻  译";
+        }
+    }
+
+    private async Task TranslateChineseWordAsync(string chinese)
+    {
+        StatusText.Text = "正在查找最自然的英文表达…";
+        if (_offline.TryGetValue(chinese, out var known))
+        {
+            var knownAudioUrl = await TryGetAudioAsync(known.Word);
+            ShowResult(known.Word, known.Ipa, known.Phonics, "本地精选词条", knownAudioUrl);
+            return;
+        }
+
+        var word = await TranslateAsync(chinese, "zh-CN", "en");
+        var (ipa, audioUrl) = await TryGetPronunciationAsync(word);
+        ShowResult(word, ipa ?? "IPA 暂未收录", BuildPhonics(word), "中文 → 英文", audioUrl);
+    }
+
+    private async Task TranslateEnglishWordAsync(string english)
+    {
+        StatusText.Text = "正在查找中文释义…";
+        var cleanEnglish = Regex.Replace(english.Trim(), @"\s+", " ");
+        var chinese = await TranslateAsync(cleanEnglish, "en", "zh-CN");
+        var (ipa, audioUrl) = await TryGetPronunciationAsync(cleanEnglish);
+        var ipaLine = string.IsNullOrWhiteSpace(ipa) ? $"原词：{cleanEnglish}" : $"{cleanEnglish}  {ipa}";
+        ShowResult(chinese, ipaLine, BuildPhonics(cleanEnglish), "英文 → 中文", audioUrl, cleanEnglish);
+    }
+
+    private static async Task<(string? Ipa, string? AudioUrl)> TryGetPronunciationAsync(string word)
+    {
+        try
+        {
+            return await GetPronunciationAsync(word);
+        }
+        catch
+        {
+            return (null, null);
+        }
+    }
+
+    private async Task TranslateParagraphAsync(string paragraph)
+    {
+        var sentences = CleanChineseSentences(paragraph).Take(30).ToList();
+        ParagraphResultsPanel.Children.Clear();
+        if (sentences.Count == 0)
+        {
+            AddParagraphMessage("没有识别到可翻译的中文句子");
+            return;
+        }
+
+        AddParagraphMessage($"已清洗为 {sentences.Count} 个句子，正在逐句翻译…");
+        for (var index = 0; index < sentences.Count; index++)
+        {
+            TranslateButton.Content = $"翻译中 {index + 1}/{sentences.Count}";
+            var english = await TranslateAsync(sentences[index], "zh-CN", "en", preservePunctuation: true);
+            if (index == 0) ParagraphResultsPanel.Children.Clear();
+            AddSentenceResult(index + 1, sentences[index], english, AnalyzeGrammarStructure(english));
+        }
+        TranslateButton.Content = "拆句并翻译";
+    }
+
+    private static IEnumerable<string> CleanChineseSentences(string paragraph)
+    {
+        var normalized = paragraph
+            .Replace("\r\n", "\n")
+            .Replace('\r', '\n');
+        foreach (var raw in Regex.Split(normalized, @"(?<=[。！？!?；;])|\n+"))
+        {
+            var sentence = Regex.Replace(raw, @"\s+", "").Trim('，', ',', '；', ';');
+            if (string.IsNullOrWhiteSpace(sentence)) continue;
+            if (!Regex.IsMatch(sentence, @"[。！？!?]$")) sentence += "。";
+            yield return sentence;
+        }
+    }
+
+    private void AddParagraphMessage(string message)
+    {
+        ParagraphResultsPanel.Children.Add(new TextBlock
+        {
+            Text = message,
+            TextWrapping = TextWrapping.Wrap,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(4, 16, 4, 8),
+            Foreground = BrushFrom("#817A94"),
+            FontSize = 12
+        });
+    }
+
+    private void AddSentenceResult(int number, string chinese, string english, string grammar)
+    {
+        var content = new StackPanel();
+        content.Children.Add(new TextBlock
+        {
+            Text = $"{number}. 中文",
+            FontSize = 10,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = BrushFrom("#8A8299")
+        });
+        content.Children.Add(new TextBlock
+        {
+            Text = chinese,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 3, 0, 8),
+            FontSize = 13,
+            Foreground = BrushFrom("#302C48")
+        });
+        content.Children.Add(new TextBlock
+        {
+            Text = "English",
+            FontSize = 10,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = BrushFrom("#8A8299")
+        });
+        content.Children.Add(new TextBlock
+        {
+            Text = english,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 3, 0, 8),
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = BrushFrom("#6B54C6")
+        });
+        content.Children.Add(new TextBlock
+        {
+            Text = $"参考语法：{grammar}",
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 11,
+            Foreground = BrushFrom("#A46145")
+        });
+
+        ParagraphResultsPanel.Children.Add(new Border
+        {
+            Background = BrushFrom("#FFFFFF"),
+            BorderBrush = BrushFrom("#E6E0F3"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(12, 10, 12, 10),
+            Margin = new Thickness(0, 0, 0, 9),
+            Child = content
+        });
+    }
+
+    private static string AnalyzeGrammarStructure(string sentence)
+    {
+        var words = Regex.Matches(sentence.ToLowerInvariant(), @"[a-z]+(?:'[a-z]+)?")
+            .Select(match => match.Value).ToList();
+        if (words.Count == 0) return "未识别到英文句法结构";
+
+        var beVerbs = new HashSet<string> { "am", "is", "are", "was", "were", "be", "been", "being" };
+        var auxiliaries = new HashSet<string>
+        {
+            "can", "could", "will", "would", "shall", "should", "may", "might", "must",
+            "do", "does", "did", "have", "has", "had"
+        };
+        var commonVerbs = new HashSet<string>
+        {
+            "go", "goes", "went", "come", "comes", "came", "make", "makes", "made", "take", "takes", "took",
+            "see", "sees", "saw", "know", "knows", "knew", "think", "thinks", "want", "wants", "need", "needs",
+            "like", "likes", "love", "loves", "learn", "learns", "study", "studies", "work", "works", "live", "lives",
+            "say", "says", "said", "tell", "tells", "told", "give", "gives", "gave", "use", "uses", "used"
+        };
+        var verbIndex = words.FindIndex(word =>
+            beVerbs.Contains(word) || auxiliaries.Contains(word) || commonVerbs.Contains(word) ||
+            word.EndsWith("ed") || word.EndsWith("ing"));
+        if (verbIndex <= 0) return "主语(S) + 谓语(V) + 其他成分（建议人工复核）";
+
+        var subject = string.Join(' ', words.Take(verbIndex));
+        var verb = words[verbIndex];
+        var remainder = string.Join(' ', words.Skip(verbIndex + 1));
+        if (beVerbs.Contains(verb))
+            return $"主系表 S + V + C｜S: {subject}｜V: {verb}｜C: {remainder}";
+        if (auxiliaries.Contains(verb) && verbIndex + 1 < words.Count)
+        {
+            var predicate = $"{verb} {words[verbIndex + 1]}";
+            var rest = string.Join(' ', words.Skip(verbIndex + 2));
+            return $"主谓宾 S + V + O｜S: {subject}｜V: {predicate}｜O/补充: {rest}";
+        }
+        return $"主谓宾 S + V + O｜S: {subject}｜V: {verb}｜O/补充: {remainder}";
     }
 
     private static async Task<string?> TryGetAudioAsync(string word)
@@ -449,7 +703,11 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task<string> TranslateAsync(string text)
+    private async Task<string> TranslateAsync(
+        string text,
+        string sourceLang = "zh-CN",
+        string targetLang = "en",
+        bool preservePunctuation = false)
     {
         var preferred = _providers[_selectedProviderIndex];
         var candidates = new[] { preferred }
@@ -463,13 +721,13 @@ public partial class MainWindow : Window
             {
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(6));
                 var stopwatch = Stopwatch.StartNew();
-                var translated = await TranslateWithProviderAsync(provider, text, timeout.Token);
+                var translated = await TranslateWithProviderAsync(provider, text, timeout.Token, sourceLang, targetLang);
                 stopwatch.Stop();
                 provider.Available = true;
                 provider.LatencyMs = stopwatch.ElapsedMilliseconds;
                 _selectedProviderIndex = _providers.IndexOf(provider);
                 UpdateAllProviderTiles();
-                return NormalizeTranslation(translated);
+                return NormalizeTranslation(translated, preservePunctuation);
             }
             catch
             {
@@ -482,23 +740,29 @@ public partial class MainWindow : Window
     }
 
     private static async Task<string> TranslateWithProviderAsync(
-        TranslationProvider provider, string text, CancellationToken cancellationToken)
+        TranslationProvider provider,
+        string text,
+        CancellationToken cancellationToken,
+        string sourceLang = "zh-CN",
+        string targetLang = "en")
     {
         var encoded = Uri.EscapeDataString(text);
+        var lingvaSource = sourceLang.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? "zh" : sourceLang;
+        var lingvaTarget = targetLang.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? "zh" : targetLang;
         string url;
         switch (provider.Kind)
         {
             case TranslationApiKind.GoogleSingle:
-                url = $"{provider.Endpoint}?client=gtx&sl=zh-CN&tl=en&dt=t&q={encoded}";
+                url = $"{provider.Endpoint}?client=gtx&sl={Uri.EscapeDataString(sourceLang)}&tl={Uri.EscapeDataString(targetLang)}&dt=t&q={encoded}";
                 break;
             case TranslationApiKind.GoogleArray:
-                url = $"{provider.Endpoint}?client=dict-chrome&sl=zh-CN&tl=en&q={encoded}";
+                url = $"{provider.Endpoint}?client=dict-chrome&sl={Uri.EscapeDataString(sourceLang)}&tl={Uri.EscapeDataString(targetLang)}&q={encoded}";
                 break;
             case TranslationApiKind.MyMemory:
-                url = $"{provider.Endpoint}?q={encoded}&langpair=zh-CN|en";
+                url = $"{provider.Endpoint}?q={encoded}&langpair={Uri.EscapeDataString(sourceLang)}|{Uri.EscapeDataString(targetLang)}";
                 break;
             case TranslationApiKind.Lingva:
-                url = $"{provider.Endpoint}/api/v1/zh/en/{encoded}";
+                url = $"{provider.Endpoint}/api/v1/{lingvaSource}/{lingvaTarget}/{encoded}";
                 break;
             default:
                 throw new NotSupportedException();
@@ -520,9 +784,10 @@ public partial class MainWindow : Window
         };
     }
 
-    private static string NormalizeTranslation(string translated)
+    private static string NormalizeTranslation(string translated, bool preservePunctuation)
     {
         if (string.IsNullOrWhiteSpace(translated)) throw new InvalidOperationException("No translation.");
+        if (preservePunctuation) return translated.Trim();
         return Regex.Replace(translated.Trim().ToLowerInvariant(), @"[^\p{L}\s'-]", "");
     }
 
@@ -656,16 +921,23 @@ public partial class MainWindow : Window
         return string.Join(" · ", parts);
     }
 
-    private void ShowResult(string word, string ipa, string phonics, string source, string? audioUrl)
+    private void ShowResult(
+        string word,
+        string ipa,
+        string phonics,
+        string source,
+        string? audioUrl,
+        string? mediaWord = null)
     {
+        var pronunciationWord = mediaWord ?? word;
         WordText.Text = word;
         IpaText.Text = ipa;
         PhonicsText.Text = $"自然拼读：{phonics}";
-        _currentWord = word;
+        _currentWord = pronunciationWord;
         _dictionaryAudioUrl = audioUrl;
         StatusText.Text = $"{source} · 正在预加载发音";
-        _ = PrepareAudioAsync(word, audioUrl);
-        _ = LoadIllustrationAsync(word);
+        _ = PrepareAudioAsync(pronunciationWord, audioUrl);
+        _ = LoadIllustrationAsync(pronunciationWord);
     }
 
     private async Task LoadIllustrationAsync(string word)
