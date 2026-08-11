@@ -28,9 +28,24 @@ public partial class MainWindow : Window
         public TextBlock? LatencyText { get; set; }
     }
 
+    private sealed class AudioProvider(string name, string endpoint, bool dictionary = false)
+    {
+        public string Name { get; } = name;
+        public string Endpoint { get; } = endpoint;
+        public bool IsDictionary { get; } = dictionary;
+        public bool Available { get; set; }
+        public long LatencyMs { get; set; } = long.MaxValue;
+        public Border? Tile { get; set; }
+        public TextBlock? NameText { get; set; }
+        public TextBlock? LatencyText { get; set; }
+    }
+
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(8) };
     private readonly MediaPlayer _player = new();
-    private string? _audioUrl;
+    private string? _audioFilePath;
+    private string? _currentWord;
+    private string? _dictionaryAudioUrl;
+    private int _audioRequestId;
     private int _imageRequestId;
     private readonly DispatcherTimer _healthTimer = new() { Interval = TimeSpan.FromSeconds(60) };
     private readonly List<TranslationProvider> _providers =
@@ -47,6 +62,21 @@ public partial class MainWindow : Window
         new("Lingva Jae", TranslationApiKind.Lingva, "https://translate.jae.fi")
     ];
     private int _selectedProviderIndex;
+    private readonly List<AudioProvider> _audioProviders =
+    [
+        new("词典原声", "https://api.dictionaryapi.dev", dictionary: true),
+        new("语音 全球", "https://translate.google.com"),
+        new("语音 英国", "https://translate.google.co.uk"),
+        new("语音 香港", "https://translate.google.com.hk"),
+        new("语音 澳洲", "https://translate.google.com.au"),
+        new("语音 加拿大", "https://translate.google.ca"),
+        new("语音 日本", "https://translate.google.co.jp"),
+        new("语音 印度", "https://translate.google.co.in"),
+        new("语音 新加坡", "https://translate.google.com.sg"),
+        new("语音 新西兰", "https://translate.google.co.nz")
+    ];
+    private int _selectedAudioProviderIndex;
+    private bool _audioStatusInitialized;
     private readonly Dictionary<string, (string Word, string Ipa, string Phonics)> _offline = new()
     {
         ["蝴蝶"] = ("butterfly", "/ˈbʌtəflaɪ/", "but · ter · fly"),
@@ -62,6 +92,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         BuildProviderTiles();
+        BuildAudioProviderTiles();
         _healthTimer.Tick += async (_, _) => await RefreshApiStatusAsync();
     }
 
@@ -106,6 +137,8 @@ public partial class MainWindow : Window
                     _selectedProviderIndex = fastest.index;
             }
             UpdateAllProviderTiles();
+            if (_audioStatusInitialized)
+                await RefreshAudioStatusAsync();
         }
         finally
         {
@@ -155,6 +188,69 @@ public partial class MainWindow : Window
         UpdateAllProviderTiles();
     }
 
+    private void BuildAudioProviderTiles()
+    {
+        AudioNodesPanel.Children.Clear();
+        for (var index = 0; index < _audioProviders.Count; index++)
+        {
+            var provider = _audioProviders[index];
+            var nameText = new TextBlock
+            {
+                Text = provider.Name,
+                FontSize = 9,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            var latencyText = new TextBlock
+            {
+                Text = "检测中",
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Margin = new Thickness(0, 2, 0, 0),
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+            var tile = new Border
+            {
+                Tag = index,
+                Height = 44,
+                Margin = new Thickness(0, 0, 0, 4),
+                Padding = new Thickness(3, 5, 3, 4),
+                CornerRadius = new CornerRadius(9),
+                BorderThickness = new Thickness(1),
+                Cursor = Cursors.Hand,
+                Child = new StackPanel { Children = { nameText, latencyText } }
+            };
+            tile.MouseLeftButtonUp += AudioProviderTile_Click;
+            provider.Tile = tile;
+            provider.NameText = nameText;
+            provider.LatencyText = latencyText;
+            AudioNodesPanel.Children.Add(tile);
+        }
+        UpdateAllAudioProviderTiles();
+    }
+
+    private void TranslationTab_Click(object sender, RoutedEventArgs e) => ShowProviderTab(showAudio: false);
+
+    private void AudioTab_Click(object sender, RoutedEventArgs e)
+    {
+        ShowProviderTab(showAudio: true);
+        if (!_audioStatusInitialized)
+        {
+            _audioStatusInitialized = true;
+            _ = RefreshAudioStatusAsync();
+        }
+    }
+
+    private void ShowProviderTab(bool showAudio)
+    {
+        TranslationNodesPanel.Visibility = showAudio ? Visibility.Collapsed : Visibility.Visible;
+        AudioNodesPanel.Visibility = showAudio ? Visibility.Visible : Visibility.Collapsed;
+        TranslationTabButton.Background = BrushFrom(showAudio ? "#EEEAF8" : "#7C63D9");
+        TranslationTabButton.Foreground = BrushFrom(showAudio ? "#655E74" : "#FFFFFF");
+        AudioTabButton.Background = BrushFrom(showAudio ? "#7C63D9" : "#EEEAF8");
+        AudioTabButton.Foreground = BrushFrom(showAudio ? "#FFFFFF" : "#655E74");
+    }
+
     private async Task ProbeProviderAsync(TranslationProvider provider)
     {
         provider.LatencyText!.Text = "检测中";
@@ -177,6 +273,43 @@ public partial class MainWindow : Window
         UpdateProviderTile(provider, _providers[_selectedProviderIndex] == provider);
     }
 
+    private async Task ProbeAudioProviderAsync(AudioProvider provider)
+    {
+        provider.LatencyText!.Text = "检测中";
+        provider.Available = false;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            var bytes = await GetAudioBytesAsync(provider, "apple", null, timeout.Token);
+            stopwatch.Stop();
+            provider.Available = bytes.Length > 256;
+            provider.LatencyMs = stopwatch.ElapsedMilliseconds;
+        }
+        catch
+        {
+            provider.Available = false;
+            provider.LatencyMs = long.MaxValue;
+        }
+        UpdateAudioProviderTile(provider, _audioProviders[_selectedAudioProviderIndex] == provider);
+    }
+
+    private async Task RefreshAudioStatusAsync()
+    {
+        await Task.WhenAll(_audioProviders.Select(ProbeAudioProviderAsync));
+        if (!_audioProviders[_selectedAudioProviderIndex].Available)
+        {
+            var fastest = _audioProviders
+                .Select((provider, index) => (provider, index))
+                .Where(item => item.provider.Available)
+                .OrderBy(item => item.provider.LatencyMs)
+                .FirstOrDefault();
+            if (fastest.provider is not null)
+                _selectedAudioProviderIndex = fastest.index;
+        }
+        UpdateAllAudioProviderTiles();
+    }
+
     private void ProviderTile_Click(object sender, MouseButtonEventArgs e)
     {
         if (sender is not Border { Tag: int index } || !_providers[index].Available) return;
@@ -185,13 +318,57 @@ public partial class MainWindow : Window
         StatusText.Text = $"已切换到 {_providers[index].Name} · {_providers[index].LatencyMs} ms";
     }
 
+    private void AudioProviderTile_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not Border { Tag: int index } || !_audioProviders[index].Available) return;
+        _selectedAudioProviderIndex = index;
+        UpdateAllAudioProviderTiles();
+        StatusText.Text = $"已切换到 {_audioProviders[index].Name} · {_audioProviders[index].LatencyMs} ms";
+        if (!string.IsNullOrWhiteSpace(_currentWord))
+            _ = PrepareAudioAsync(_currentWord, _dictionaryAudioUrl);
+    }
+
     private void UpdateAllProviderTiles()
     {
         for (var index = 0; index < _providers.Count; index++)
             UpdateProviderTile(_providers[index], index == _selectedProviderIndex);
     }
 
+    private void UpdateAllAudioProviderTiles()
+    {
+        for (var index = 0; index < _audioProviders.Count; index++)
+            UpdateAudioProviderTile(_audioProviders[index], index == _selectedAudioProviderIndex);
+    }
+
     private static void UpdateProviderTile(TranslationProvider provider, bool selected)
+    {
+        var tile = provider.Tile!;
+        var label = provider.LatencyText!;
+        provider.NameText!.Text = selected ? $"✓ {provider.Name}" : provider.Name;
+
+        if (!provider.Available)
+        {
+            label.Text = "不可用";
+            SetTileColor(tile, label, "#FDEBEC", selected ? "#7C63D9" : "#DD7A82", "#B53B46", selected ? 2 : 1);
+        }
+        else if (provider.LatencyMs < 500)
+        {
+            label.Text = $"{provider.LatencyMs} ms";
+            SetTileColor(tile, label, "#E8F7EF", selected ? "#7C63D9" : "#55B985", "#27845A", selected ? 2 : 1);
+        }
+        else if (provider.LatencyMs < 1500)
+        {
+            label.Text = $"{provider.LatencyMs} ms";
+            SetTileColor(tile, label, "#FFF6DF", selected ? "#7C63D9" : "#E7B94A", "#A87300", selected ? 2 : 1);
+        }
+        else
+        {
+            label.Text = $"{provider.LatencyMs} ms";
+            SetTileColor(tile, label, "#FFF0E8", selected ? "#7C63D9" : "#E99163", "#B85B2C", selected ? 2 : 1);
+        }
+    }
+
+    private static void UpdateAudioProviderTile(AudioProvider provider, bool selected)
     {
         var tile = provider.Tile!;
         var label = provider.LatencyText!;
@@ -226,6 +403,9 @@ public partial class MainWindow : Window
         tile.BorderThickness = new Thickness(thickness);
         label.Foreground = (SolidColorBrush)new BrushConverter().ConvertFromString(text)!;
     }
+
+    private static SolidColorBrush BrushFrom(string color) =>
+        (SolidColorBrush)new BrushConverter().ConvertFromString(color)!;
 
     private async void Translate_Click(object sender, RoutedEventArgs e)
     {
@@ -373,6 +553,102 @@ public partial class MainWindow : Window
         return (ipa, audio);
     }
 
+    private static async Task<byte[]> GetAudioBytesAsync(
+        AudioProvider provider, string word, string? dictionaryAudioUrl, CancellationToken cancellationToken)
+    {
+        string audioUrl;
+        if (provider.IsDictionary)
+        {
+            audioUrl = dictionaryAudioUrl ?? await FindDictionaryAudioUrlAsync(word, cancellationToken)
+                ?? throw new InvalidOperationException("Dictionary audio unavailable.");
+        }
+        else
+        {
+            audioUrl = $"{provider.Endpoint}/translate_tts?ie=UTF-8&client=tw-ob&tl=en-GB&q={Uri.EscapeDataString(word)}";
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, audioUrl);
+        request.Headers.UserAgent.ParseAdd("Mozilla/5.0 LinguaOrb/1.0");
+        using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseContentRead, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+        if (bytes.Length < 256) throw new InvalidOperationException("Audio response was empty.");
+        return bytes;
+    }
+
+    private static async Task<string?> FindDictionaryAudioUrlAsync(string word, CancellationToken cancellationToken)
+    {
+        var firstWord = word.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? word;
+        var json = await Http.GetStringAsync(
+            $"https://api.dictionaryapi.dev/api/v2/entries/en/{Uri.EscapeDataString(firstWord)}",
+            cancellationToken);
+        using var doc = JsonDocument.Parse(json);
+        foreach (var item in doc.RootElement[0].GetProperty("phonetics").EnumerateArray())
+        {
+            if (!item.TryGetProperty("audio", out var audio) || string.IsNullOrWhiteSpace(audio.GetString())) continue;
+            var value = audio.GetString()!;
+            return value.StartsWith("//") ? $"https:{value}" : value;
+        }
+        return null;
+    }
+
+    private async Task PrepareAudioAsync(string word, string? dictionaryAudioUrl)
+    {
+        var requestId = ++_audioRequestId;
+        _audioFilePath = null;
+        SpeakButton.IsEnabled = false;
+        SpeakButton.Opacity = .65;
+        SpeakButton.Content = "⏳ 加载发音";
+
+        var preferred = _audioProviders[_selectedAudioProviderIndex];
+        var candidates = new[] { preferred }
+            .Concat(_audioProviders.Where(provider => provider != preferred && provider.Available)
+                .OrderBy(provider => provider.LatencyMs))
+            .Concat(_audioProviders.Where(provider => provider != preferred && !provider.Available))
+            .Distinct();
+
+        foreach (var provider in candidates)
+        {
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(7));
+                var stopwatch = Stopwatch.StartNew();
+                var bytes = await GetAudioBytesAsync(provider, word, dictionaryAudioUrl, timeout.Token);
+                stopwatch.Stop();
+                if (requestId != _audioRequestId) return;
+
+                var cacheDirectory = Path.Combine(Path.GetTempPath(), "LinguaOrb");
+                Directory.CreateDirectory(cacheDirectory);
+                var cachePath = Path.Combine(cacheDirectory, "current-pronunciation.mp3");
+                _player.Close();
+                await File.WriteAllBytesAsync(cachePath, bytes);
+
+                provider.Available = true;
+                provider.LatencyMs = stopwatch.ElapsedMilliseconds;
+                _selectedAudioProviderIndex = _audioProviders.IndexOf(provider);
+                _audioFilePath = cachePath;
+                SpeakButton.IsEnabled = true;
+                SpeakButton.Opacity = 1;
+                SpeakButton.Content = "🔊 英式发音";
+                UpdateAllAudioProviderTiles();
+                StatusText.Text = $"发音已缓存 · {provider.Name} · {provider.LatencyMs} ms";
+                return;
+            }
+            catch
+            {
+                provider.Available = false;
+                provider.LatencyMs = long.MaxValue;
+                UpdateAudioProviderTile(provider, _audioProviders[_selectedAudioProviderIndex] == provider);
+            }
+        }
+
+        if (requestId == _audioRequestId)
+        {
+            SpeakButton.Content = "🔇 暂无发音";
+            StatusText.Text = "所有发音节点暂时不可用";
+        }
+    }
+
     private static string BuildPhonics(string word)
     {
         var parts = Regex.Split(word, @"(?<=[aeiouy])(?=[^aeiouy\s]{1,2}[aeiouy])",
@@ -385,10 +661,10 @@ public partial class MainWindow : Window
         WordText.Text = word;
         IpaText.Text = ipa;
         PhonicsText.Text = $"自然拼读：{phonics}";
-        _audioUrl = audioUrl;
-        SpeakButton.IsEnabled = !string.IsNullOrWhiteSpace(audioUrl);
-        SpeakButton.Opacity = SpeakButton.IsEnabled ? 1 : .55;
-        StatusText.Text = SpeakButton.IsEnabled ? $"{source} · 可播放英式发音" : $"{source} · 暂无发音音频";
+        _currentWord = word;
+        _dictionaryAudioUrl = audioUrl;
+        StatusText.Text = $"{source} · 正在预加载发音";
+        _ = PrepareAudioAsync(word, audioUrl);
         _ = LoadIllustrationAsync(word);
     }
 
@@ -454,16 +730,16 @@ public partial class MainWindow : Window
 
     private void Speak_Click(object sender, RoutedEventArgs e)
     {
-        if (string.IsNullOrWhiteSpace(_audioUrl))
+        if (string.IsNullOrWhiteSpace(_audioFilePath) || !File.Exists(_audioFilePath))
         {
-            StatusText.Text = "该词条暂未收录发音音频";
+            StatusText.Text = "发音尚未加载完成";
             return;
         }
 
         try
         {
             _player.Stop();
-            _player.Open(new Uri(_audioUrl));
+            _player.Open(new Uri(_audioFilePath, UriKind.Absolute));
             _player.Play();
             StatusText.Text = "正在播放英式发音…";
         }

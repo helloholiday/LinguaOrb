@@ -87,10 +87,16 @@
         <StackPanel x:Name="ApiStatusPanel" Visibility="Collapsed"
                     Width="84" HorizontalAlignment="Right" VerticalAlignment="Top"
                     Margin="0,15,8,0">
-            <TextBlock Text="翻译节点" HorizontalAlignment="Center" Margin="0,0,0,5"
-                       FontSize="10" FontWeight="SemiBold" Foreground="#6F6883"
-                       ToolTip="点击可用节点即可切换；延迟为真实翻译请求耗时"/>
+            <UniformGrid Columns="2" Margin="0,0,0,5">
+                <Button x:Name="TranslationTabButton" Content="翻译" Height="25" FontSize="10"
+                        Click="TranslationTab_Click" Background="#7C63D9" Foreground="White"
+                        BorderThickness="0"/>
+                <Button x:Name="AudioTabButton" Content="声音" Height="25" FontSize="10"
+                        Click="AudioTab_Click" Background="#EEEAF8" Foreground="#655E74"
+                        BorderThickness="0"/>
+            </UniformGrid>
             <StackPanel x:Name="TranslationNodesPanel"/>
+            <StackPanel x:Name="AudioNodesPanel" Visibility="Collapsed"/>
         </StackPanel>
 
         <Button x:Name="OrbButton" Width="66" Height="66" HorizontalAlignment="Right"
