@@ -44,7 +44,8 @@ public partial class MainWindow : Window
         EnWordToChinese,
         ZhParagraphToEnglish,
         EnParagraphToChinese,
-        DailyReading
+        DailyReading,
+        DailyReview
     }
     private enum TranslationApiKind { GoogleSingle, GoogleArray, MyMemory, Lingva }
 
@@ -505,19 +506,23 @@ public partial class MainWindow : Window
 
     private void DailyReadingMode_Click(object sender, RoutedEventArgs e) => SetAssistantMode(AssistantMode.DailyReading);
 
+    private void DailyReviewMode_Click(object sender, RoutedEventArgs e) => SetAssistantMode(AssistantMode.DailyReview);
+
     private void SetAssistantMode(AssistantMode mode)
     {
         _mode = mode;
         var dailyReading = mode == AssistantMode.DailyReading;
+        var dailyReview = mode == AssistantMode.DailyReview;
         var paragraph = mode is AssistantMode.ZhParagraphToEnglish or AssistantMode.EnParagraphToChinese;
-        InputPanel.Visibility = dailyReading ? Visibility.Collapsed : Visibility.Visible;
-        TranslateButton.Visibility = dailyReading ? Visibility.Collapsed : Visibility.Visible;
+        InputPanel.Visibility = dailyReading || dailyReview ? Visibility.Collapsed : Visibility.Visible;
+        TranslateButton.Visibility = dailyReading || dailyReview ? Visibility.Collapsed : Visibility.Visible;
         WordResultCard.Visibility = paragraph ? Visibility.Collapsed : Visibility.Visible;
-        WordResultCard.Visibility = paragraph || dailyReading ? Visibility.Collapsed : Visibility.Visible;
-        StatusText.Visibility = paragraph || dailyReading ? Visibility.Collapsed : Visibility.Visible;
-        IllustrationImage.Visibility = paragraph || dailyReading ? Visibility.Collapsed : Visibility.Visible;
+        WordResultCard.Visibility = paragraph || dailyReading || dailyReview ? Visibility.Collapsed : Visibility.Visible;
+        StatusText.Visibility = paragraph || dailyReading || dailyReview ? Visibility.Collapsed : Visibility.Visible;
+        IllustrationImage.Visibility = paragraph || dailyReading || dailyReview ? Visibility.Collapsed : Visibility.Visible;
         ParagraphResultCard.Visibility = paragraph ? Visibility.Visible : Visibility.Collapsed;
         DailyReadingCard.Visibility = dailyReading ? Visibility.Visible : Visibility.Collapsed;
+        DailyReviewCard.Visibility = dailyReview ? Visibility.Visible : Visibility.Collapsed;
         SpeakButton.Visibility = mode == AssistantMode.EnWordToChinese || mode == AssistantMode.ZhWordToEnglish
             ? Visibility.Visible
             : Visibility.Collapsed;
@@ -527,6 +532,7 @@ public partial class MainWindow : Window
         StyleModeButton(ParagraphModeButton, mode == AssistantMode.ZhParagraphToEnglish);
         StyleModeButton(EnParagraphModeButton, mode == AssistantMode.EnParagraphToChinese);
         StyleModeButton(DailyReadingModeButton, dailyReading);
+        StyleModeButton(DailyReviewModeButton, dailyReview);
 
         switch (mode)
         {
@@ -554,8 +560,12 @@ public partial class MainWindow : Window
                 ModeSubtitle.Text = "每日单词晨读清单 · 最多 20 个";
                 RefreshDailyWordsPanel();
                 break;
+            case AssistantMode.DailyReview:
+                ModeSubtitle.Text = "选择某一次历史清单继续复习";
+                RefreshReviewListsPanel();
+                break;
         }
-        if (!dailyReading) InputBox.Focus();
+        if (!dailyReading && !dailyReview) InputBox.Focus();
     }
 
     private static void StyleModeButton(Button button, bool selected)
@@ -607,6 +617,7 @@ public partial class MainWindow : Window
                     await TranslateEnglishParagraphAsync(input);
                     break;
                 case AssistantMode.DailyReading:
+                case AssistantMode.DailyReview:
                     break;
             }
         }
@@ -1450,6 +1461,113 @@ public partial class MainWindow : Window
         {
             SaveDailyWordsButton.Content = "保存";
             SaveDailyWordsButton.IsEnabled = true;
+        }
+    }
+
+    private static List<DailyWord> ReadArchivedWords(string markdownPath)
+    {
+        var words = new List<DailyWord>();
+        foreach (var line in File.ReadLines(markdownPath))
+        {
+            var match = Regex.Match(line,
+                @"^\|\s*\d+\s*\|\s*(?<done>✓|□)\s*\|\s*(?<word>[^|]+?)\s*\|\s*(?<ipa>[^|]*?)\s*\|");
+            if (!match.Success) continue;
+            words.Add(new DailyWord
+            {
+                Word = match.Groups["word"].Value.Trim(),
+                Ipa = match.Groups["ipa"].Value.Trim(),
+                Completed = match.Groups["done"].Value == "✓"
+            });
+        }
+        return words.Take(20).ToList();
+    }
+
+    private void RefreshReviewListsPanel()
+    {
+        if (ReviewListsPanel is null) return;
+        ReviewListsPanel.Children.Clear();
+        try
+        {
+            if (!Directory.Exists(DailyExportRoot))
+            {
+                AddReviewMessage("还没有保存过晨读清单");
+                return;
+            }
+            var files = Directory.EnumerateFiles(DailyExportRoot, "*_晨读清单.md", SearchOption.AllDirectories)
+                .OrderByDescending(File.GetLastWriteTime)
+                .ToList();
+            if (files.Count == 0)
+            {
+                AddReviewMessage("还没有保存过晨读清单");
+                return;
+            }
+            foreach (var file in files)
+            {
+                var words = ReadArchivedWords(file);
+                var directoryName = Path.GetFileName(Path.GetDirectoryName(file)) ?? Path.GetFileNameWithoutExtension(file);
+                var title = directoryName.Replace("_晨读清单", "  晨读清单");
+                var button = new Button
+                {
+                    Tag = file, HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                    Padding = new Thickness(11, 9, 11, 9), Margin = new Thickness(0, 0, 0, 7),
+                    Background = BrushFrom("#FFFFFF"), BorderBrush = BrushFrom("#E1DAF2"),
+                    BorderThickness = new Thickness(1)
+                };
+                var row = new Grid();
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                row.Children.Add(new TextBlock
+                {
+                    Text = title, FontSize = 12, FontWeight = FontWeights.SemiBold,
+                    Foreground = BrushFrom("#4C4564"), VerticalAlignment = VerticalAlignment.Center
+                });
+                var count = new TextBlock
+                {
+                    Text = $"{words.Count} 词  ›", FontSize = 11, Foreground = BrushFrom("#7C63D9"),
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                Grid.SetColumn(count, 1);
+                row.Children.Add(count);
+                button.Content = row;
+                button.Click += ReviewList_Click;
+                ReviewListsPanel.Children.Add(button);
+            }
+        }
+        catch (Exception exception)
+        {
+            AddReviewMessage($"读取历史清单失败：{exception.Message}");
+        }
+    }
+
+    private void AddReviewMessage(string message)
+    {
+        ReviewListsPanel.Children.Add(new TextBlock
+        {
+            Text = message, TextWrapping = TextWrapping.Wrap, HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 38, 0, 0), Foreground = BrushFrom("#8D86A0")
+        });
+    }
+
+    private void ReviewList_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string file }) return;
+        try
+        {
+            var archivedWords = ReadArchivedWords(file);
+            if (archivedWords.Count == 0)
+            {
+                AddReviewMessage("这个历史清单中没有可加载的单词");
+                return;
+            }
+            _dailyWords.Clear();
+            _dailyWords.AddRange(archivedWords);
+            SaveDailyWords();
+            SetAssistantMode(AssistantMode.DailyReading);
+            DailyReadingTitle.Text = $"已加载复习 · {Path.GetFileName(Path.GetDirectoryName(file))}";
+        }
+        catch (Exception exception)
+        {
+            AddReviewMessage($"加载失败：{exception.Message}");
         }
     }
 
