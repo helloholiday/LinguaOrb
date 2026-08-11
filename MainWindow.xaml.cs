@@ -74,6 +74,7 @@ public partial class MainWindow : Window
     private readonly List<DailyWord> _dailyWords = [];
     private readonly string _dailyWordsPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LinguaOrb", "daily-words.json");
+    private const string DailyExportRoot = @"C:\LLMWiki\LLMWiki\wiki\sources\LinguaOrb";
     private readonly List<TranslationProvider> _providers =
     [
         new("Google 全球", TranslationApiKind.GoogleSingle, "https://translate.googleapis.com/translate_a/single"),
@@ -1308,32 +1309,7 @@ public partial class MainWindow : Window
         button.Content = "⏳";
         try
         {
-            var directory = Path.Combine(Path.GetTempPath(), "LinguaOrb", "daily");
-            Directory.CreateDirectory(directory);
-            var safeName = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(word)))[..16];
-            var path = Path.Combine(directory, $"{safeName}.mp3");
-            if (!File.Exists(path))
-            {
-                var preferred = _audioProviders[_selectedAudioProviderIndex];
-                var candidates = new[] { preferred }
-                    .Concat(_audioProviders.Where(provider => provider != preferred && provider.Available).OrderBy(provider => provider.LatencyMs))
-                    .Concat(_audioProviders.Where(provider => provider != preferred && !provider.Available))
-                    .Distinct();
-                byte[]? bytes = null;
-                foreach (var provider in candidates)
-                {
-                    try
-                    {
-                        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(7));
-                        bytes = await GetAudioBytesAsync(provider, word, null, timeout.Token);
-                        _selectedAudioProviderIndex = _audioProviders.IndexOf(provider);
-                        break;
-                    }
-                    catch { }
-                }
-                if (bytes is null) throw new InvalidOperationException("No audio provider is available.");
-                await File.WriteAllBytesAsync(path, bytes);
-            }
+            var path = await EnsureDailyWordAudioAsync(word);
             _player.Stop();
             _player.Open(new Uri(path, UriKind.Absolute));
             _player.Play();
@@ -1346,6 +1322,103 @@ public partial class MainWindow : Window
         {
             button.Content = "🔊";
             button.IsEnabled = true;
+        }
+    }
+
+    private static string GetDailyAudioCachePath(string word)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "LinguaOrb", "daily");
+        var safeName = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(word)))[..16];
+        return Path.Combine(directory, $"{safeName}.mp3");
+    }
+
+    private async Task<string> EnsureDailyWordAudioAsync(string word)
+    {
+        var path = GetDailyAudioCachePath(word);
+        if (File.Exists(path)) return path;
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var preferred = _audioProviders[_selectedAudioProviderIndex];
+        var candidates = new[] { preferred }
+            .Concat(_audioProviders.Where(provider => provider != preferred && provider.Available).OrderBy(provider => provider.LatencyMs))
+            .Concat(_audioProviders.Where(provider => provider != preferred && !provider.Available))
+            .Distinct();
+        foreach (var provider in candidates)
+        {
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(7));
+                var bytes = await GetAudioBytesAsync(provider, word, null, timeout.Token);
+                await File.WriteAllBytesAsync(path, bytes);
+                _selectedAudioProviderIndex = _audioProviders.IndexOf(provider);
+                return path;
+            }
+            catch { }
+        }
+        throw new InvalidOperationException("所有发音节点暂时不可用。");
+    }
+
+    private async void SaveDailyWords_Click(object sender, RoutedEventArgs e)
+    {
+        if (_dailyWords.Count == 0)
+        {
+            DailyReadingTitle.Text = "今日晨读 · 暂无可保存单词";
+            return;
+        }
+
+        SaveDailyWordsButton.IsEnabled = false;
+        SaveDailyWordsButton.Content = "保存中…";
+        try
+        {
+            var timestamp = DateTime.Now.ToString("yyyy-MM-dd_HHmmss");
+            var exportDirectory = Path.Combine(DailyExportRoot, $"{timestamp}_晨读清单");
+            var audioDirectory = Path.Combine(exportDirectory, "audio");
+            Directory.CreateDirectory(audioDirectory);
+            var markdown = new System.Text.StringBuilder();
+            markdown.AppendLine($"# 鹿鸣晨读清单 · {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            markdown.AppendLine();
+            markdown.AppendLine($"> 共 {_dailyWords.Count} 个单词；音频与清单保存在同一时间线目录。");
+            markdown.AppendLine();
+            markdown.AppendLine("| 序号 | 完成 | 单词 | IPA | 发音 |");
+            markdown.AppendLine("|---:|:---:|---|---|---|");
+            var failedWords = new List<string>();
+            for (var index = 0; index < _dailyWords.Count; index++)
+            {
+                var item = _dailyWords[index];
+                var fileWord = Regex.Replace(item.Word, @"[^A-Za-z0-9_-]+", "-").Trim('-');
+                if (string.IsNullOrWhiteSpace(fileWord)) fileWord = "word";
+                var audioName = $"{index + 1:D2}_{fileWord}.mp3";
+                try
+                {
+                    var cachedAudio = await EnsureDailyWordAudioAsync(item.Word);
+                    File.Copy(cachedAudio, Path.Combine(audioDirectory, audioName), overwrite: true);
+                    markdown.AppendLine($"| {index + 1} | {(item.Completed ? "✓" : "□")} | {item.Word} | {item.Ipa} | [🔊 播放](audio/{audioName}) |");
+                }
+                catch
+                {
+                    failedWords.Add(item.Word);
+                    markdown.AppendLine($"| {index + 1} | {(item.Completed ? "✓" : "□")} | {item.Word} | {item.Ipa} | 暂无音频 |");
+                }
+            }
+            if (failedWords.Count > 0)
+            {
+                markdown.AppendLine();
+                markdown.AppendLine($"> 未能下载音频：{string.Join("、", failedWords)}");
+            }
+            var listPath = Path.Combine(exportDirectory, $"{timestamp}_晨读清单.md");
+            await File.WriteAllTextAsync(listPath, markdown.ToString(), System.Text.Encoding.UTF8);
+            DailyReadingTitle.Text = $"保存成功 · {timestamp}";
+            SaveDailyWordsButton.ToolTip = exportDirectory;
+        }
+        catch (Exception exception)
+        {
+            DailyReadingTitle.Text = "保存失败 · 请检查目录权限";
+            SaveDailyWordsButton.ToolTip = exception.Message;
+        }
+        finally
+        {
+            SaveDailyWordsButton.Content = "保存";
+            SaveDailyWordsButton.IsEnabled = true;
         }
     }
 

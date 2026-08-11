@@ -126,8 +126,12 @@
                                 <TextBlock x:Name="DailyReadingTitle" Text="今日晨读 · 0/20" FontSize="15" FontWeight="Bold" Foreground="#4C4564"/>
                                 <TextBlock Text="查询成功的英文词会自动加入；点击喇叭跟读" Margin="0,3,0,8" FontSize="10" Foreground="#8D86A0"/>
                             </StackPanel>
-                            <Button Content="清空" HorizontalAlignment="Right" VerticalAlignment="Top" Padding="9,4"
-                                    Click="ClearDailyWords_Click" Background="#FFF1EB" Foreground="#B85B4B" BorderThickness="0"/>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
+                                <Button x:Name="SaveDailyWordsButton" Content="保存" Padding="9,4" Margin="0,0,6,0"
+                                        Click="SaveDailyWords_Click" Background="#E9F6EE" Foreground="#27845A" BorderThickness="0"/>
+                                <Button Content="清空" Padding="9,4" Click="ClearDailyWords_Click"
+                                        Background="#FFF1EB" Foreground="#B85B4B" BorderThickness="0"/>
+                            </StackPanel>
                         </Grid>
                         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
                             <StackPanel x:Name="DailyWordsPanel"/>
