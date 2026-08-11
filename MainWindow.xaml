@@ -27,7 +27,7 @@
                     <StackPanel Margin="0,0,35,0">
                         <StackPanel Orientation="Horizontal">
                             <Border Width="38" Height="38" Margin="0,0,9,0" CornerRadius="11" Background="#FFF5E8">
-                                <Image Source="Assets/luming-logo.png" Margin="3" Stretch="Uniform"/>
+                                <Image x:Name="HeaderDeerAnimationImage" Source="Assets/deer-drink-1.png" Margin="2" Stretch="Uniform"/>
                             </Border>
                             <StackPanel VerticalAlignment="Center">
                                 <TextBlock Text="鹿鸣 · LinguaOrb" FontSize="20" FontWeight="Bold" Foreground="{StaticResource InkBrush}"/>
@@ -138,7 +138,7 @@
                             <DropShadowEffect BlurRadius="18" ShadowDepth="5" Opacity=".35" Color="#5948A5"/>
                         </Border.Effect>
                         <Grid>
-                            <Image Source="Assets/luming-logo.png" Margin="7" Stretch="Uniform"/>
+                            <Image x:Name="DeerAnimationImage" Source="Assets/deer-drink-1.png" Margin="4" Stretch="Uniform"/>
                         </Grid>
                     </Border>
                 </ControlTemplate>

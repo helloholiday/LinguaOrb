@@ -55,6 +55,10 @@ public partial class MainWindow : Window
     private int _audioRequestId;
     private int _imageRequestId;
     private readonly DispatcherTimer _healthTimer = new() { Interval = TimeSpan.FromSeconds(60) };
+    private readonly DispatcherTimer _deerAnimationTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    private BitmapImage[] _deerAnimationFrames = [];
+    private int _deerAnimationStep;
+    private static readonly int[] DeerAnimationSequence = [0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 2, 1];
     private readonly List<TranslationProvider> _providers =
     [
         new("Google 全球", TranslationApiKind.GoogleSingle, "https://translate.googleapis.com/translate_a/single"),
@@ -102,6 +106,34 @@ public partial class MainWindow : Window
         BuildProviderTiles();
         BuildAudioProviderTiles();
         _healthTimer.Tick += async (_, _) => await RefreshApiStatusAsync();
+        _deerAnimationFrames =
+        [
+            LoadResourceBitmap("Assets/deer-drink-1.png"),
+            LoadResourceBitmap("Assets/deer-drink-2.png"),
+            LoadResourceBitmap("Assets/deer-drink-3.png")
+        ];
+        _deerAnimationTimer.Tick += DeerAnimationTimer_Tick;
+        _deerAnimationTimer.Start();
+    }
+
+    private static BitmapImage LoadResourceBitmap(string path)
+    {
+        var bitmap = new BitmapImage();
+        bitmap.BeginInit();
+        bitmap.UriSource = new Uri($"pack://application:,,,/{path}", UriKind.Absolute);
+        bitmap.CacheOption = BitmapCacheOption.OnLoad;
+        bitmap.EndInit();
+        bitmap.Freeze();
+        return bitmap;
+    }
+
+    private void DeerAnimationTimer_Tick(object? sender, EventArgs e)
+    {
+        var frame = _deerAnimationFrames[DeerAnimationSequence[_deerAnimationStep]];
+        if (OrbButton.Template.FindName("DeerAnimationImage", OrbButton) is Image orbImage)
+            orbImage.Source = frame;
+        HeaderDeerAnimationImage.Source = frame;
+        _deerAnimationStep = (_deerAnimationStep + 1) % DeerAnimationSequence.Length;
     }
 
     private void Window_Loaded(object sender, RoutedEventArgs e)

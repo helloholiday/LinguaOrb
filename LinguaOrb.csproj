@@ -11,5 +11,8 @@
   <ItemGroup>
     <Resource Include="Assets\owl.png" />
     <Resource Include="Assets\luming-logo.png" />
+    <Resource Include="Assets\deer-drink-1.png" />
+    <Resource Include="Assets\deer-drink-2.png" />
+    <Resource Include="Assets\deer-drink-3.png" />
   </ItemGroup>
 </Project>
