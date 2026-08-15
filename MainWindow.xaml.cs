@@ -14,11 +14,123 @@ namespace LinguaOrb;
 
 public partial class MainWindow : Window
 {
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(8) };
+    private sealed class NetworkCountingHandler(HttpMessageHandler innerHandler) : DelegatingHandler(innerHandler)
+    {
+        private long _activeTcpRequests;
+        private long _totalTcpRequests;
+        public event Action<long, long>? CountsChanged;
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var total = Interlocked.Increment(ref _totalTcpRequests);
+            var active = Interlocked.Increment(ref _activeTcpRequests);
+            CountsChanged?.Invoke(active, total);
+            try
+            {
+                return await base.SendAsync(request, cancellationToken);
+            }
+            finally
+            {
+                active = Interlocked.Decrement(ref _activeTcpRequests);
+                CountsChanged?.Invoke(active, Interlocked.Read(ref _totalTcpRequests));
+            }
+        }
+    }
+
+    private enum AssistantMode
+    {
+        ZhWordToEnglish,
+        EnWordToChinese,
+        ZhParagraphToEnglish,
+        EnParagraphToChinese,
+        DailyReading,
+        DailyReview
+    }
+    private enum TranslationApiKind { GoogleSingle, GoogleArray, MyMemory, Lingva }
+
+    private sealed class TranslationProvider(string name, TranslationApiKind kind, string endpoint)
+    {
+        public string Name { get; } = name;
+        public TranslationApiKind Kind { get; } = kind;
+        public string Endpoint { get; } = endpoint;
+        public bool Available { get; set; }
+        public long LatencyMs { get; set; } = long.MaxValue;
+        public Border? Tile { get; set; }
+        public TextBlock? NameText { get; set; }
+        public TextBlock? LatencyText { get; set; }
+    }
+
+    private sealed class AudioProvider(string name, string endpoint, bool dictionary = false)
+    {
+        public string Name { get; } = name;
+        public string Endpoint { get; } = endpoint;
+        public bool IsDictionary { get; } = dictionary;
+        public bool Available { get; set; }
+        public long LatencyMs { get; set; } = long.MaxValue;
+        public Border? Tile { get; set; }
+        public TextBlock? NameText { get; set; }
+        public TextBlock? LatencyText { get; set; }
+    }
+
+    private static readonly NetworkCountingHandler NetworkCounter = new(new SocketsHttpHandler());
+    private static readonly HttpClient Http = new(NetworkCounter) { Timeout = TimeSpan.FromSeconds(8) };
     private readonly MediaPlayer _player = new();
-    private string? _audioUrl;
+    private string? _audioFilePath;
+    private string? _currentWord;
+    private string? _dictionaryAudioUrl;
+    private int _audioRequestId;
     private int _imageRequestId;
-    private readonly DispatcherTimer _healthTimer = new() { Interval = TimeSpan.FromSeconds(15) };
+    private readonly DispatcherTimer _healthTimer = new() { Interval = TimeSpan.FromSeconds(60) };
+    private readonly DispatcherTimer _deerAnimationTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    private BitmapImage[] _deerAnimationFrames = [];
+    private int _deerAnimationStep;
+    private static readonly int[] DeerAnimationSequence = [0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 2, 1];
+    private sealed class DailyWord
+    {
+        public string Word { get; set; } = "";
+        public string Ipa { get; set; } = "";
+        public bool Completed { get; set; }
+    }
+    private sealed class DailyWordFile
+    {
+        public string Date { get; set; } = "";
+        public List<DailyWord> Words { get; set; } = [];
+    }
+    private readonly List<DailyWord> _dailyWords = [];
+    private readonly string _dailyWordsPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LinguaOrb", "daily-words.json");
+    private const string DailyExportRoot = @"C:\LLMWiki\LLMWiki\wiki\sources\LinguaOrb";
+    private readonly List<TranslationProvider> _providers =
+    [
+        new("Google 全球", TranslationApiKind.GoogleSingle, "https://translate.googleapis.com/translate_a/single"),
+        new("Google Web", TranslationApiKind.GoogleSingle, "https://translate.google.com/translate_a/single"),
+        new("Google 轻量", TranslationApiKind.GoogleArray, "https://clients5.google.com/translate_a/t"),
+        new("MyMemory", TranslationApiKind.MyMemory, "https://api.mymemory.translated.net/get"),
+        new("Lingva 官方", TranslationApiKind.Lingva, "https://lingva.ml"),
+        new("Lingva 欧洲", TranslationApiKind.Lingva, "https://translate.plausibility.cloud"),
+        new("Lingva 社区", TranslationApiKind.Lingva, "https://translate.projectsegfau.lt"),
+        new("Lingva Garuda", TranslationApiKind.Lingva, "https://lingva.garudalinux.org"),
+        new("Lingva Lunar", TranslationApiKind.Lingva, "https://lingva.lunar.icu"),
+        new("Lingva Jae", TranslationApiKind.Lingva, "https://translate.jae.fi")
+    ];
+    private int _selectedProviderIndex;
+    private readonly List<AudioProvider> _audioProviders =
+    [
+        new("词典原声", "https://api.dictionaryapi.dev", dictionary: true),
+        new("语音 全球", "https://translate.google.com"),
+        new("语音 英国", "https://translate.google.co.uk"),
+        new("语音 香港", "https://translate.google.com.hk"),
+        new("语音 澳洲", "https://translate.google.com.au"),
+        new("语音 加拿大", "https://translate.google.ca"),
+        new("语音 日本", "https://translate.google.co.jp"),
+        new("语音 印度", "https://translate.google.co.in"),
+        new("语音 新加坡", "https://translate.google.com.sg"),
+        new("语音 新西兰", "https://translate.google.co.nz")
+    ];
+    private int _selectedAudioProviderIndex;
+    private bool _audioStatusInitialized;
+    private AssistantMode _mode = AssistantMode.ZhWordToEnglish;
     private readonly Dictionary<string, (string Word, string Ipa, string Phonics)> _offline = new()
     {
         ["蝴蝶"] = ("butterfly", "/ˈbʌtəflaɪ/", "but · ter · fly"),
@@ -33,7 +145,44 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        NetworkCounter.CountsChanged += NetworkCounter_CountsChanged;
+        BuildProviderTiles();
+        BuildAudioProviderTiles();
         _healthTimer.Tick += async (_, _) => await RefreshApiStatusAsync();
+        _deerAnimationFrames =
+        [
+            LoadResourceBitmap("Assets/deer-drink-1.png"),
+            LoadResourceBitmap("Assets/deer-drink-2.png"),
+            LoadResourceBitmap("Assets/deer-drink-3.png")
+        ];
+        _deerAnimationTimer.Tick += DeerAnimationTimer_Tick;
+        _deerAnimationTimer.Start();
+        LoadDailyWords();
+    }
+
+    private void NetworkCounter_CountsChanged(long activeTcp, long totalTcp)
+    {
+        Dispatcher.BeginInvoke(() => NetworkRequestText.Text = $"UDP:0/0  TCP:{activeTcp}/{totalTcp}");
+    }
+
+    private static BitmapImage LoadResourceBitmap(string path)
+    {
+        var bitmap = new BitmapImage();
+        bitmap.BeginInit();
+        bitmap.UriSource = new Uri($"pack://application:,,,/{path}", UriKind.Absolute);
+        bitmap.CacheOption = BitmapCacheOption.OnLoad;
+        bitmap.EndInit();
+        bitmap.Freeze();
+        return bitmap;
+    }
+
+    private void DeerAnimationTimer_Tick(object? sender, EventArgs e)
+    {
+        var frame = _deerAnimationFrames[DeerAnimationSequence[_deerAnimationStep]];
+        if (OrbButton.Template.FindName("DeerAnimationImage", OrbButton) is Image orbImage)
+            orbImage.Source = frame;
+        HeaderDeerAnimationImage.Source = frame;
+        _deerAnimationStep = (_deerAnimationStep + 1) % DeerAnimationSequence.Length;
     }
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
@@ -64,16 +213,21 @@ public partial class MainWindow : Window
         _healthTimer.Stop();
         try
         {
-            await Task.WhenAll(
-                ProbeApiAsync(
-                    "https://api.mymemory.translated.net/get?q=%E8%8B%B9%E6%9E%9C&langpair=zh-CN|en",
-                    TranslateApiTile, TranslatePingText),
-                ProbeApiAsync(
-                    "https://api.dictionaryapi.dev/api/v2/entries/en/apple",
-                    DictionaryApiTile, DictionaryPingText),
-                ProbeApiAsync(
-                    "https://commons.wikimedia.org/w/api.php?action=query&format=json&meta=siteinfo&siprop=general&origin=*",
-                    ImageApiTile, ImagePingText));
+            await Task.WhenAll(_providers.Select(ProbeProviderAsync));
+
+            if (!_providers[_selectedProviderIndex].Available)
+            {
+                var fastest = _providers
+                    .Select((provider, index) => (provider, index))
+                    .Where(item => item.provider.Available)
+                    .OrderBy(item => item.provider.LatencyMs)
+                    .FirstOrDefault();
+                if (fastest.provider is not null)
+                    _selectedProviderIndex = fastest.index;
+            }
+            UpdateAllProviderTiles();
+            if (_audioStatusInitialized)
+                await RefreshAudioStatusAsync();
         }
         finally
         {
@@ -82,72 +236,698 @@ public partial class MainWindow : Window
         }
     }
 
-    private static async Task ProbeApiAsync(string url, Border tile, TextBlock label)
+    private void BuildProviderTiles()
     {
-        label.Text = "检测中";
-        SetTileColor(tile, label, "#F5F2FA", "#DDD7E8", "#8A8299");
+        TranslationNodesPanel.Children.Clear();
+        for (var index = 0; index < _providers.Count; index++)
+        {
+            var provider = _providers[index];
+            var nameText = new TextBlock
+            {
+                Text = provider.Name,
+                FontSize = 9,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            var latencyText = new TextBlock
+            {
+                Text = "检测中",
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Margin = new Thickness(0, 2, 0, 0),
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+            var tile = new Border
+            {
+                Tag = index,
+                Height = 44,
+                Margin = new Thickness(0, 0, 0, 4),
+                Padding = new Thickness(3, 5, 3, 4),
+                CornerRadius = new CornerRadius(9),
+                BorderThickness = new Thickness(1),
+                Cursor = Cursors.Hand,
+                Child = new StackPanel { Children = { nameText, latencyText } }
+            };
+            tile.MouseLeftButtonUp += ProviderTile_Click;
+            provider.Tile = tile;
+            provider.NameText = nameText;
+            provider.LatencyText = latencyText;
+            TranslationNodesPanel.Children.Add(tile);
+        }
+        UpdateAllProviderTiles();
+    }
+
+    private void BuildAudioProviderTiles()
+    {
+        AudioNodesPanel.Children.Clear();
+        for (var index = 0; index < _audioProviders.Count; index++)
+        {
+            var provider = _audioProviders[index];
+            var nameText = new TextBlock
+            {
+                Text = provider.Name,
+                FontSize = 9,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            var latencyText = new TextBlock
+            {
+                Text = "检测中",
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Margin = new Thickness(0, 2, 0, 0),
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+            var tile = new Border
+            {
+                Tag = index,
+                Height = 44,
+                Margin = new Thickness(0, 0, 0, 4),
+                Padding = new Thickness(3, 5, 3, 4),
+                CornerRadius = new CornerRadius(9),
+                BorderThickness = new Thickness(1),
+                Cursor = Cursors.Hand,
+                Child = new StackPanel { Children = { nameText, latencyText } }
+            };
+            tile.MouseLeftButtonUp += AudioProviderTile_Click;
+            provider.Tile = tile;
+            provider.NameText = nameText;
+            provider.LatencyText = latencyText;
+            AudioNodesPanel.Children.Add(tile);
+        }
+        UpdateAllAudioProviderTiles();
+    }
+
+    private void TranslationTab_Click(object sender, RoutedEventArgs e) => ShowProviderTab(showAudio: false);
+
+    private void AudioTab_Click(object sender, RoutedEventArgs e)
+    {
+        ShowProviderTab(showAudio: true);
+        if (!_audioStatusInitialized)
+        {
+            _audioStatusInitialized = true;
+            _ = RefreshAudioStatusAsync();
+        }
+    }
+
+    private void ShowProviderTab(bool showAudio)
+    {
+        TranslationNodesPanel.Visibility = showAudio ? Visibility.Collapsed : Visibility.Visible;
+        AudioNodesPanel.Visibility = showAudio ? Visibility.Visible : Visibility.Collapsed;
+        TranslationTabButton.Background = BrushFrom(showAudio ? "#EEEAF8" : "#7C63D9");
+        TranslationTabButton.Foreground = BrushFrom(showAudio ? "#655E74" : "#FFFFFF");
+        AudioTabButton.Background = BrushFrom(showAudio ? "#7C63D9" : "#EEEAF8");
+        AudioTabButton.Foreground = BrushFrom(showAudio ? "#FFFFFF" : "#655E74");
+    }
+
+    private async Task ProbeProviderAsync(TranslationProvider provider)
+    {
+        provider.LatencyText!.Text = "检测中";
+        provider.Available = false;
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         var stopwatch = Stopwatch.StartNew();
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            var translated = await TranslateWithProviderAsync(provider, "苹果", timeout.Token);
             stopwatch.Stop();
-            var milliseconds = stopwatch.ElapsedMilliseconds;
-
-            if (!response.IsSuccessStatusCode)
-                throw new HttpRequestException($"HTTP {(int)response.StatusCode}");
-
-            label.Text = $"{milliseconds} ms";
-            if (milliseconds < 500)
-                SetTileColor(tile, label, "#E8F7EF", "#55B985", "#27845A");
-            else if (milliseconds < 1500)
-                SetTileColor(tile, label, "#FFF6DF", "#E7B94A", "#A87300");
-            else
-                SetTileColor(tile, label, "#FFF0E8", "#E99163", "#B85B2C");
+            provider.Available = !string.IsNullOrWhiteSpace(translated);
+            provider.LatencyMs = stopwatch.ElapsedMilliseconds;
         }
         catch
         {
+            provider.Available = false;
+            provider.LatencyMs = long.MaxValue;
+        }
+        UpdateProviderTile(provider, _providers[_selectedProviderIndex] == provider);
+    }
+
+    private async Task ProbeAudioProviderAsync(AudioProvider provider)
+    {
+        provider.LatencyText!.Text = "检测中";
+        provider.Available = false;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            var bytes = await GetAudioBytesAsync(provider, "apple", null, timeout.Token);
+            stopwatch.Stop();
+            provider.Available = bytes.Length > 256;
+            provider.LatencyMs = stopwatch.ElapsedMilliseconds;
+        }
+        catch
+        {
+            provider.Available = false;
+            provider.LatencyMs = long.MaxValue;
+        }
+        UpdateAudioProviderTile(provider, _audioProviders[_selectedAudioProviderIndex] == provider);
+    }
+
+    private async Task RefreshAudioStatusAsync()
+    {
+        await Task.WhenAll(_audioProviders.Select(ProbeAudioProviderAsync));
+        if (!_audioProviders[_selectedAudioProviderIndex].Available)
+        {
+            var fastest = _audioProviders
+                .Select((provider, index) => (provider, index))
+                .Where(item => item.provider.Available)
+                .OrderBy(item => item.provider.LatencyMs)
+                .FirstOrDefault();
+            if (fastest.provider is not null)
+                _selectedAudioProviderIndex = fastest.index;
+        }
+        UpdateAllAudioProviderTiles();
+    }
+
+    private void ProviderTile_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not Border { Tag: int index } || !_providers[index].Available) return;
+        _selectedProviderIndex = index;
+        UpdateAllProviderTiles();
+        StatusText.Text = $"已切换到 {_providers[index].Name} · {_providers[index].LatencyMs} ms";
+    }
+
+    private void AudioProviderTile_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not Border { Tag: int index } || !_audioProviders[index].Available) return;
+        _selectedAudioProviderIndex = index;
+        UpdateAllAudioProviderTiles();
+        StatusText.Text = $"已切换到 {_audioProviders[index].Name} · {_audioProviders[index].LatencyMs} ms";
+        if (!string.IsNullOrWhiteSpace(_currentWord))
+            _ = PrepareAudioAsync(_currentWord, _dictionaryAudioUrl);
+    }
+
+    private void UpdateAllProviderTiles()
+    {
+        for (var index = 0; index < _providers.Count; index++)
+            UpdateProviderTile(_providers[index], index == _selectedProviderIndex);
+    }
+
+    private void UpdateAllAudioProviderTiles()
+    {
+        for (var index = 0; index < _audioProviders.Count; index++)
+            UpdateAudioProviderTile(_audioProviders[index], index == _selectedAudioProviderIndex);
+    }
+
+    private static void UpdateProviderTile(TranslationProvider provider, bool selected)
+    {
+        var tile = provider.Tile!;
+        var label = provider.LatencyText!;
+        provider.NameText!.Text = selected ? $"✓ {provider.Name}" : provider.Name;
+
+        if (!provider.Available)
+        {
             label.Text = "不可用";
-            SetTileColor(tile, label, "#FDEBEC", "#DD7A82", "#B53B46");
+            SetTileColor(tile, label, "#FDEBEC", selected ? "#7C63D9" : "#DD7A82", "#B53B46", selected ? 2 : 1);
+        }
+        else if (provider.LatencyMs < 500)
+        {
+            label.Text = $"{provider.LatencyMs} ms";
+            SetTileColor(tile, label, "#E8F7EF", selected ? "#7C63D9" : "#55B985", "#27845A", selected ? 2 : 1);
+        }
+        else if (provider.LatencyMs < 1500)
+        {
+            label.Text = $"{provider.LatencyMs} ms";
+            SetTileColor(tile, label, "#FFF6DF", selected ? "#7C63D9" : "#E7B94A", "#A87300", selected ? 2 : 1);
+        }
+        else
+        {
+            label.Text = $"{provider.LatencyMs} ms";
+            SetTileColor(tile, label, "#FFF0E8", selected ? "#7C63D9" : "#E99163", "#B85B2C", selected ? 2 : 1);
         }
     }
 
-    private static void SetTileColor(Border tile, TextBlock label, string background, string border, string text)
+    private static void UpdateAudioProviderTile(AudioProvider provider, bool selected)
+    {
+        var tile = provider.Tile!;
+        var label = provider.LatencyText!;
+        provider.NameText!.Text = selected ? $"✓ {provider.Name}" : provider.Name;
+
+        if (!provider.Available)
+        {
+            label.Text = "不可用";
+            SetTileColor(tile, label, "#FDEBEC", selected ? "#7C63D9" : "#DD7A82", "#B53B46", selected ? 2 : 1);
+        }
+        else if (provider.LatencyMs < 500)
+        {
+            label.Text = $"{provider.LatencyMs} ms";
+            SetTileColor(tile, label, "#E8F7EF", selected ? "#7C63D9" : "#55B985", "#27845A", selected ? 2 : 1);
+        }
+        else if (provider.LatencyMs < 1500)
+        {
+            label.Text = $"{provider.LatencyMs} ms";
+            SetTileColor(tile, label, "#FFF6DF", selected ? "#7C63D9" : "#E7B94A", "#A87300", selected ? 2 : 1);
+        }
+        else
+        {
+            label.Text = $"{provider.LatencyMs} ms";
+            SetTileColor(tile, label, "#FFF0E8", selected ? "#7C63D9" : "#E99163", "#B85B2C", selected ? 2 : 1);
+        }
+    }
+
+    private static void SetTileColor(Border tile, TextBlock label, string background, string border, string text, double thickness)
     {
         tile.Background = (SolidColorBrush)new BrushConverter().ConvertFromString(background)!;
         tile.BorderBrush = (SolidColorBrush)new BrushConverter().ConvertFromString(border)!;
+        tile.BorderThickness = new Thickness(thickness);
         label.Foreground = (SolidColorBrush)new BrushConverter().ConvertFromString(text)!;
+    }
+
+    private static SolidColorBrush BrushFrom(string color) =>
+        (SolidColorBrush)new BrushConverter().ConvertFromString(color)!;
+
+    private void ZhWordMode_Click(object sender, RoutedEventArgs e) => SetAssistantMode(AssistantMode.ZhWordToEnglish);
+
+    private void EnWordMode_Click(object sender, RoutedEventArgs e) => SetAssistantMode(AssistantMode.EnWordToChinese);
+
+    private void ParagraphMode_Click(object sender, RoutedEventArgs e) => SetAssistantMode(AssistantMode.ZhParagraphToEnglish);
+
+    private void EnParagraphMode_Click(object sender, RoutedEventArgs e) => SetAssistantMode(AssistantMode.EnParagraphToChinese);
+
+    private void DailyReadingMode_Click(object sender, RoutedEventArgs e) => SetAssistantMode(AssistantMode.DailyReading);
+
+    private void DailyReviewMode_Click(object sender, RoutedEventArgs e) => SetAssistantMode(AssistantMode.DailyReview);
+
+    private void SetAssistantMode(AssistantMode mode)
+    {
+        _mode = mode;
+        var dailyReading = mode == AssistantMode.DailyReading;
+        var dailyReview = mode == AssistantMode.DailyReview;
+        var paragraph = mode is AssistantMode.ZhParagraphToEnglish or AssistantMode.EnParagraphToChinese;
+        InputPanel.Visibility = dailyReading || dailyReview ? Visibility.Collapsed : Visibility.Visible;
+        TranslateButton.Visibility = dailyReading || dailyReview ? Visibility.Collapsed : Visibility.Visible;
+        WordResultCard.Visibility = paragraph ? Visibility.Collapsed : Visibility.Visible;
+        WordResultCard.Visibility = paragraph || dailyReading || dailyReview ? Visibility.Collapsed : Visibility.Visible;
+        StatusText.Visibility = paragraph || dailyReading || dailyReview ? Visibility.Collapsed : Visibility.Visible;
+        IllustrationImage.Visibility = paragraph || dailyReading || dailyReview ? Visibility.Collapsed : Visibility.Visible;
+        ParagraphResultCard.Visibility = paragraph ? Visibility.Visible : Visibility.Collapsed;
+        DailyReadingCard.Visibility = dailyReading ? Visibility.Visible : Visibility.Collapsed;
+        DailyReviewCard.Visibility = dailyReview ? Visibility.Visible : Visibility.Collapsed;
+        SpeakButton.Visibility = mode == AssistantMode.EnWordToChinese || mode == AssistantMode.ZhWordToEnglish
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+        StyleModeButton(ZhWordModeButton, mode == AssistantMode.ZhWordToEnglish);
+        StyleModeButton(EnWordModeButton, mode == AssistantMode.EnWordToChinese);
+        StyleModeButton(ParagraphModeButton, mode == AssistantMode.ZhParagraphToEnglish);
+        StyleModeButton(EnParagraphModeButton, mode == AssistantMode.EnParagraphToChinese);
+        StyleModeButton(DailyReadingModeButton, dailyReading);
+        StyleModeButton(DailyReviewModeButton, dailyReview);
+
+        switch (mode)
+        {
+            case AssistantMode.ZhWordToEnglish:
+                ModeSubtitle.Text = "中文词语 → 英文单词、音标与发音";
+                InputBox.ToolTip = "输入中文，例如：蝴蝶";
+                TranslateButton.Content = "翻  译";
+                break;
+            case AssistantMode.EnWordToChinese:
+                ModeSubtitle.Text = "英文词语 → 中文释义";
+                InputBox.ToolTip = "输入英文，例如：butterfly";
+                TranslateButton.Content = "翻  译";
+                break;
+            case AssistantMode.ZhParagraphToEnglish:
+                ModeSubtitle.Text = "中文段落 → 逐句中英对照与语法结构";
+                InputBox.ToolTip = "输入中文段落，可包含多句话";
+                TranslateButton.Content = "拆句并翻译";
+                break;
+            case AssistantMode.EnParagraphToChinese:
+                ModeSubtitle.Text = "英文段落 → 逐句英中对照与语法结构";
+                InputBox.ToolTip = "输入英文段落，可包含多句话";
+                TranslateButton.Content = "拆句并翻译";
+                break;
+            case AssistantMode.DailyReading:
+                ModeSubtitle.Text = "每日单词晨读清单 · 最多 20 个";
+                RefreshDailyWordsPanel();
+                break;
+            case AssistantMode.DailyReview:
+                ModeSubtitle.Text = "选择某一次历史清单继续复习";
+                RefreshReviewListsPanel();
+                break;
+        }
+        if (!dailyReading && !dailyReview) InputBox.Focus();
+    }
+
+    private static void StyleModeButton(Button button, bool selected)
+    {
+        button.Background = BrushFrom(selected ? "#7C63D9" : "#EEEAF8");
+        button.Foreground = BrushFrom(selected ? "#FFFFFF" : "#655E74");
     }
 
     private async void Translate_Click(object sender, RoutedEventArgs e)
     {
-        var chinese = InputBox.Text.Trim();
-        if (string.IsNullOrWhiteSpace(chinese))
+        var input = InputBox.Text.Trim();
+        if (string.IsNullOrWhiteSpace(input))
         {
-            StatusText.Text = "请先输入一个中文词语";
+            if (_mode is AssistantMode.ZhParagraphToEnglish or AssistantMode.EnParagraphToChinese)
+            {
+                ParagraphResultsPanel.Children.Clear();
+                ParagraphResultsPanel.Children.Add(new TextBlock
+                {
+                    Text = _mode == AssistantMode.EnParagraphToChinese ? "请先输入英文段落" : "请先输入中文段落",
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    Margin = new Thickness(0, 18, 0, 0),
+                    Foreground = BrushFrom("#8D86A0")
+                });
+            }
+            else
+            {
+                StatusText.Text = _mode == AssistantMode.EnWordToChinese
+                    ? "请先输入一个英文词语"
+                    : "请先输入一个中文词语";
+            }
             return;
         }
 
-        StatusText.Text = "正在查找最自然的表达…";
+        TranslateButton.IsEnabled = false;
         try
         {
-            if (_offline.TryGetValue(chinese, out var known))
+            switch (_mode)
             {
-                var knownAudioUrl = await TryGetAudioAsync(known.Word);
-                ShowResult(known.Word, known.Ipa, known.Phonics, "本地精选词条", knownAudioUrl);
-                return;
+                case AssistantMode.ZhWordToEnglish:
+                    await TranslateChineseWordAsync(input);
+                    break;
+                case AssistantMode.EnWordToChinese:
+                    await TranslateEnglishWordAsync(input);
+                    break;
+                case AssistantMode.ZhParagraphToEnglish:
+                    await TranslateParagraphAsync(input);
+                    break;
+                case AssistantMode.EnParagraphToChinese:
+                    await TranslateEnglishParagraphAsync(input);
+                    break;
+                case AssistantMode.DailyReading:
+                case AssistantMode.DailyReview:
+                    break;
             }
-
-            var word = await TranslateAsync(chinese);
-            var (ipa, audioUrl) = await GetPronunciationAsync(word);
-            ShowResult(word, ipa ?? "IPA 暂未收录", BuildPhonics(word), "在线翻译与英英词典", audioUrl);
         }
         catch
         {
-            StatusText.Text = "网络暂不可用，请试试：蝴蝶、苹果、快乐、朋友";
+            if (_mode is AssistantMode.ZhParagraphToEnglish or AssistantMode.EnParagraphToChinese)
+                AddParagraphMessage("翻译中断：当前所有翻译节点均不可用");
+            else
+                StatusText.Text = "当前翻译节点暂不可用，请稍后重试";
         }
+        finally
+        {
+            TranslateButton.IsEnabled = true;
+            TranslateButton.Content = _mode is AssistantMode.ZhParagraphToEnglish or AssistantMode.EnParagraphToChinese
+                ? "拆句并翻译"
+                : "翻  译";
+        }
+    }
+
+    private async Task TranslateChineseWordAsync(string chinese)
+    {
+        StatusText.Text = "正在查找最自然的英文表达…";
+        if (_offline.TryGetValue(chinese, out var known))
+        {
+            var knownAudioUrl = await TryGetAudioAsync(known.Word);
+            ShowResult(known.Word, known.Ipa, known.Phonics, "本地精选词条", knownAudioUrl);
+            return;
+        }
+
+        var word = await TranslateAsync(chinese, "zh-CN", "en");
+        var (ipa, audioUrl) = await TryGetPronunciationAsync(word);
+        ShowResult(word, ipa ?? "IPA 暂未收录", BuildPhonics(word), "中文 → 英文", audioUrl);
+    }
+
+    private async Task TranslateEnglishWordAsync(string english)
+    {
+        StatusText.Text = "正在查找中文释义…";
+        var cleanEnglish = Regex.Replace(english.Trim(), @"\s+", " ");
+        var chinese = await TranslateAsync(cleanEnglish, "en", "zh-CN");
+        var (ipa, audioUrl) = await TryGetPronunciationAsync(cleanEnglish);
+        var ipaLine = string.IsNullOrWhiteSpace(ipa) ? $"原词：{cleanEnglish}" : $"{cleanEnglish}  {ipa}";
+        ShowResult(chinese, ipaLine, BuildPhonics(cleanEnglish), "英文 → 中文", audioUrl, cleanEnglish);
+    }
+
+    private static async Task<(string? Ipa, string? AudioUrl)> TryGetPronunciationAsync(string word)
+    {
+        try
+        {
+            return await GetPronunciationAsync(word);
+        }
+        catch
+        {
+            return (null, null);
+        }
+    }
+
+    private async Task TranslateParagraphAsync(string paragraph)
+    {
+        var sentences = CleanChineseSentences(paragraph).Take(30).ToList();
+        ParagraphResultsPanel.Children.Clear();
+        if (sentences.Count == 0)
+        {
+            AddParagraphMessage("没有识别到可翻译的中文句子");
+            return;
+        }
+
+        AddParagraphMessage($"已清洗为 {sentences.Count} 个句子，正在逐句翻译…");
+        for (var index = 0; index < sentences.Count; index++)
+        {
+            TranslateButton.Content = $"翻译中 {index + 1}/{sentences.Count}";
+            var english = await TranslateAsync(sentences[index], "zh-CN", "en", preservePunctuation: true);
+            if (index == 0) ParagraphResultsPanel.Children.Clear();
+            AddSentenceResult(
+                index + 1,
+                "中文", sentences[index],
+                "English", english,
+                AnalyzeGrammarStructure(english));
+        }
+        TranslateButton.Content = "拆句并翻译";
+    }
+
+    private async Task TranslateEnglishParagraphAsync(string paragraph)
+    {
+        var sentences = CleanEnglishSentences(paragraph).Take(30).ToList();
+        ParagraphResultsPanel.Children.Clear();
+        if (sentences.Count == 0)
+        {
+            AddParagraphMessage("没有识别到可翻译的英文句子");
+            return;
+        }
+
+        AddParagraphMessage($"已清洗为 {sentences.Count} 个句子，正在逐句翻译…");
+        for (var index = 0; index < sentences.Count; index++)
+        {
+            TranslateButton.Content = $"翻译中 {index + 1}/{sentences.Count}";
+            var chinese = await TranslateAsync(sentences[index], "en", "zh-CN", preservePunctuation: true);
+            TranslateButton.Content = $"规范化 {index + 1}/{sentences.Count}";
+            var roundTripEnglish = await TranslateAsync(chinese, "zh-CN", "en", preservePunctuation: true);
+            var standardEnglish = StandardizeEnglishSentence(roundTripEnglish);
+            if (index == 0) ParagraphResultsPanel.Children.Clear();
+            AddSentenceResult(
+                index + 1,
+                "English", sentences[index],
+                "中文", chinese,
+                AnalyzeGrammarStructure(standardEnglish),
+                standardEnglish);
+        }
+        TranslateButton.Content = "拆句并翻译";
+    }
+
+    private static IEnumerable<string> CleanChineseSentences(string paragraph)
+    {
+        var normalized = paragraph
+            .Replace("\r\n", "\n")
+            .Replace('\r', '\n');
+        foreach (var raw in Regex.Split(normalized, @"(?<=[。！？!?；;])|\n+"))
+        {
+            var sentence = Regex.Replace(raw, @"\s+", "").Trim('，', ',', '；', ';');
+            if (string.IsNullOrWhiteSpace(sentence)) continue;
+            if (!Regex.IsMatch(sentence, @"[。！？!?]$")) sentence += "。";
+            yield return sentence;
+        }
+    }
+
+    private static IEnumerable<string> CleanEnglishSentences(string paragraph)
+    {
+        var normalized = paragraph
+            .Replace("\r\n", "\n")
+            .Replace('\r', '\n');
+        foreach (var raw in Regex.Split(normalized, @"(?<=[.!?;])|\n+"))
+        {
+            var sentence = Regex.Replace(raw, @"\s+", " ").Trim().Trim(',', ';');
+            if (string.IsNullOrWhiteSpace(sentence)) continue;
+            sentence = char.ToUpperInvariant(sentence[0]) + sentence[1..];
+            if (!Regex.IsMatch(sentence, @"[.!?]$")) sentence += ".";
+            yield return sentence;
+        }
+    }
+
+    private static string StandardizeEnglishSentence(string sentence)
+    {
+        var result = Regex.Replace(sentence.Trim(), @"\s+", " ");
+        var replacements = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [@"\bgonna\b"] = "going to",
+            [@"\bwanna\b"] = "want to",
+            [@"\bgotta\b"] = "have to",
+            [@"\bkinda\b"] = "kind of",
+            [@"\bsorta\b"] = "sort of",
+            [@"\blemme\b"] = "let me",
+            [@"\bgimme\b"] = "give me",
+            [@"\bdunno\b"] = "do not know",
+            [@"\bcuz\b|\b'cause\b"] = "because",
+            [@"\bain't\b"] = "is not",
+            [@"\bcan't\b"] = "cannot",
+            [@"\bwon't\b"] = "will not",
+            [@"\bdon't\b"] = "do not",
+            [@"\bdoesn't\b"] = "does not",
+            [@"\bdidn't\b"] = "did not",
+            [@"\bisn't\b"] = "is not",
+            [@"\baren't\b"] = "are not",
+            [@"\bwasn't\b"] = "was not",
+            [@"\bweren't\b"] = "were not",
+            [@"\bi'm\b"] = "I am",
+            [@"\byou're\b"] = "you are",
+            [@"\bwe're\b"] = "we are",
+            [@"\bthey're\b"] = "they are",
+            [@"\bi've\b"] = "I have",
+            [@"\byou've\b"] = "you have",
+            [@"\bi'll\b"] = "I will",
+            [@"\byou'll\b"] = "you will"
+        };
+        foreach (var replacement in replacements)
+            result = Regex.Replace(result, replacement.Key, replacement.Value, RegexOptions.IgnoreCase);
+
+        if (result.Length > 0)
+            result = char.ToUpperInvariant(result[0]) + result[1..];
+        if (!Regex.IsMatch(result, @"[.!?]$")) result += ".";
+        return result;
+    }
+
+    private void AddParagraphMessage(string message)
+    {
+        ParagraphResultsPanel.Children.Add(new TextBlock
+        {
+            Text = message,
+            TextWrapping = TextWrapping.Wrap,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(4, 16, 4, 8),
+            Foreground = BrushFrom("#817A94"),
+            FontSize = 12
+        });
+    }
+
+    private void AddSentenceResult(
+        int number,
+        string sourceLabel,
+        string sourceText,
+        string targetLabel,
+        string targetText,
+        string grammar,
+        string? standardEnglish = null)
+    {
+        var content = new StackPanel();
+        content.Children.Add(new TextBlock
+        {
+            Text = $"{number}. {sourceLabel}",
+            FontSize = 10,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = BrushFrom("#8A8299")
+        });
+        content.Children.Add(new TextBlock
+        {
+            Text = sourceText,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 3, 0, 8),
+            FontSize = 13,
+            Foreground = BrushFrom("#302C48")
+        });
+        content.Children.Add(new TextBlock
+        {
+            Text = targetLabel,
+            FontSize = 10,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = BrushFrom("#8A8299")
+        });
+        content.Children.Add(new TextBlock
+        {
+            Text = targetText,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 3, 0, 8),
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = BrushFrom("#6B54C6")
+        });
+        if (!string.IsNullOrWhiteSpace(standardEnglish))
+        {
+            content.Children.Add(new TextBlock
+            {
+                Text = "标准英文（回译整理）",
+                FontSize = 10,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = BrushFrom("#8A8299")
+            });
+            content.Children.Add(new TextBlock
+            {
+                Text = standardEnglish,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 3, 0, 8),
+                FontSize = 13,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = BrushFrom("#27845A")
+            });
+        }
+        content.Children.Add(new TextBlock
+        {
+            Text = $"参考语法：{grammar}",
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 11,
+            Foreground = BrushFrom("#A46145")
+        });
+
+        ParagraphResultsPanel.Children.Add(new Border
+        {
+            Background = BrushFrom("#FFFFFF"),
+            BorderBrush = BrushFrom("#E6E0F3"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(12, 10, 12, 10),
+            Margin = new Thickness(0, 0, 0, 9),
+            Child = content
+        });
+    }
+
+    private static string AnalyzeGrammarStructure(string sentence)
+    {
+        var words = Regex.Matches(sentence.ToLowerInvariant(), @"[a-z]+(?:'[a-z]+)?")
+            .Select(match => match.Value).ToList();
+        if (words.Count == 0) return "未识别到英文句法结构";
+
+        var beVerbs = new HashSet<string> { "am", "is", "are", "was", "were", "be", "been", "being" };
+        var auxiliaries = new HashSet<string>
+        {
+            "can", "could", "will", "would", "shall", "should", "may", "might", "must",
+            "do", "does", "did", "have", "has", "had"
+        };
+        var commonVerbs = new HashSet<string>
+        {
+            "go", "goes", "went", "come", "comes", "came", "make", "makes", "made", "take", "takes", "took",
+            "see", "sees", "saw", "know", "knows", "knew", "think", "thinks", "want", "wants", "need", "needs",
+            "like", "likes", "love", "loves", "learn", "learns", "study", "studies", "work", "works", "live", "lives",
+            "say", "says", "said", "tell", "tells", "told", "give", "gives", "gave", "use", "uses", "used"
+        };
+        var verbIndex = words.FindIndex(word =>
+            beVerbs.Contains(word) || auxiliaries.Contains(word) || commonVerbs.Contains(word) ||
+            word.EndsWith("ed") || word.EndsWith("ing"));
+        if (verbIndex <= 0) return "主语(S) + 谓语(V) + 其他成分（建议人工复核）";
+
+        var subject = string.Join(' ', words.Take(verbIndex));
+        var verb = words[verbIndex];
+        var remainder = string.Join(' ', words.Skip(verbIndex + 1));
+        if (beVerbs.Contains(verb))
+            return $"主系表 S + V + C｜S: {subject}｜V: {verb}｜C: {remainder}";
+        if (auxiliaries.Contains(verb) && verbIndex + 1 < words.Count)
+        {
+            var predicate = $"{verb} {words[verbIndex + 1]}";
+            var rest = string.Join(' ', words.Skip(verbIndex + 2));
+            return $"主谓宾 S + V + O｜S: {subject}｜V: {predicate}｜O/补充: {rest}";
+        }
+        return $"主谓宾 S + V + O｜S: {subject}｜V: {verb}｜O/补充: {remainder}";
     }
 
     private static async Task<string?> TryGetAudioAsync(string word)
@@ -163,12 +943,91 @@ public partial class MainWindow : Window
         }
     }
 
-    private static async Task<string> TranslateAsync(string text)
+    private async Task<string> TranslateAsync(
+        string text,
+        string sourceLang = "zh-CN",
+        string targetLang = "en",
+        bool preservePunctuation = false)
     {
-        var url = $"https://api.mymemory.translated.net/get?q={Uri.EscapeDataString(text)}&langpair=zh-CN|en";
-        using var doc = JsonDocument.Parse(await Http.GetStringAsync(url));
-        var translated = doc.RootElement.GetProperty("responseData").GetProperty("translatedText").GetString();
+        var preferred = _providers[_selectedProviderIndex];
+        var candidates = new[] { preferred }
+            .Concat(_providers.Where(provider => provider != preferred && provider.Available).OrderBy(provider => provider.LatencyMs))
+            .Concat(_providers.Where(provider => provider != preferred && !provider.Available))
+            .Distinct();
+
+        foreach (var provider in candidates)
+        {
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+                var stopwatch = Stopwatch.StartNew();
+                var translated = await TranslateWithProviderAsync(provider, text, timeout.Token, sourceLang, targetLang);
+                stopwatch.Stop();
+                provider.Available = true;
+                provider.LatencyMs = stopwatch.ElapsedMilliseconds;
+                _selectedProviderIndex = _providers.IndexOf(provider);
+                UpdateAllProviderTiles();
+                return NormalizeTranslation(translated, preservePunctuation);
+            }
+            catch
+            {
+                provider.Available = false;
+                provider.LatencyMs = long.MaxValue;
+                UpdateProviderTile(provider, _providers[_selectedProviderIndex] == provider);
+            }
+        }
+        throw new HttpRequestException("All translation providers failed.");
+    }
+
+    private static async Task<string> TranslateWithProviderAsync(
+        TranslationProvider provider,
+        string text,
+        CancellationToken cancellationToken,
+        string sourceLang = "zh-CN",
+        string targetLang = "en")
+    {
+        var encoded = Uri.EscapeDataString(text);
+        var lingvaSource = sourceLang.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? "zh" : sourceLang;
+        var lingvaTarget = targetLang.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? "zh" : targetLang;
+        string url;
+        switch (provider.Kind)
+        {
+            case TranslationApiKind.GoogleSingle:
+                url = $"{provider.Endpoint}?client=gtx&sl={Uri.EscapeDataString(sourceLang)}&tl={Uri.EscapeDataString(targetLang)}&dt=t&q={encoded}";
+                break;
+            case TranslationApiKind.GoogleArray:
+                url = $"{provider.Endpoint}?client=dict-chrome&sl={Uri.EscapeDataString(sourceLang)}&tl={Uri.EscapeDataString(targetLang)}&q={encoded}";
+                break;
+            case TranslationApiKind.MyMemory:
+                url = $"{provider.Endpoint}?q={encoded}&langpair={Uri.EscapeDataString(sourceLang)}|{Uri.EscapeDataString(targetLang)}";
+                break;
+            case TranslationApiKind.Lingva:
+                url = $"{provider.Endpoint}/api/v1/{lingvaSource}/{lingvaTarget}/{encoded}";
+                break;
+            default:
+                throw new NotSupportedException();
+        }
+
+        var json = await Http.GetStringAsync(url, cancellationToken);
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        return provider.Kind switch
+        {
+            TranslationApiKind.GoogleSingle => string.Concat(
+                root[0].EnumerateArray().Select(segment => segment[0].GetString())),
+            TranslationApiKind.GoogleArray => root[0].GetString() ?? throw new InvalidOperationException(),
+            TranslationApiKind.MyMemory => root.GetProperty("responseData").GetProperty("translatedText").GetString()
+                                           ?? throw new InvalidOperationException(),
+            TranslationApiKind.Lingva => root.GetProperty("translation").GetString()
+                                         ?? throw new InvalidOperationException(),
+            _ => throw new NotSupportedException()
+        };
+    }
+
+    private static string NormalizeTranslation(string translated, bool preservePunctuation)
+    {
         if (string.IsNullOrWhiteSpace(translated)) throw new InvalidOperationException("No translation.");
+        if (preservePunctuation) return translated.Trim();
         return Regex.Replace(translated.Trim().ToLowerInvariant(), @"[^\p{L}\s'-]", "");
     }
 
@@ -199,6 +1058,102 @@ public partial class MainWindow : Window
         return (ipa, audio);
     }
 
+    private static async Task<byte[]> GetAudioBytesAsync(
+        AudioProvider provider, string word, string? dictionaryAudioUrl, CancellationToken cancellationToken)
+    {
+        string audioUrl;
+        if (provider.IsDictionary)
+        {
+            audioUrl = dictionaryAudioUrl ?? await FindDictionaryAudioUrlAsync(word, cancellationToken)
+                ?? throw new InvalidOperationException("Dictionary audio unavailable.");
+        }
+        else
+        {
+            audioUrl = $"{provider.Endpoint}/translate_tts?ie=UTF-8&client=tw-ob&tl=en-GB&q={Uri.EscapeDataString(word)}";
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, audioUrl);
+        request.Headers.UserAgent.ParseAdd("Mozilla/5.0 LinguaOrb/1.0");
+        using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseContentRead, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+        if (bytes.Length < 256) throw new InvalidOperationException("Audio response was empty.");
+        return bytes;
+    }
+
+    private static async Task<string?> FindDictionaryAudioUrlAsync(string word, CancellationToken cancellationToken)
+    {
+        var firstWord = word.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? word;
+        var json = await Http.GetStringAsync(
+            $"https://api.dictionaryapi.dev/api/v2/entries/en/{Uri.EscapeDataString(firstWord)}",
+            cancellationToken);
+        using var doc = JsonDocument.Parse(json);
+        foreach (var item in doc.RootElement[0].GetProperty("phonetics").EnumerateArray())
+        {
+            if (!item.TryGetProperty("audio", out var audio) || string.IsNullOrWhiteSpace(audio.GetString())) continue;
+            var value = audio.GetString()!;
+            return value.StartsWith("//") ? $"https:{value}" : value;
+        }
+        return null;
+    }
+
+    private async Task PrepareAudioAsync(string word, string? dictionaryAudioUrl)
+    {
+        var requestId = ++_audioRequestId;
+        _audioFilePath = null;
+        SpeakButton.IsEnabled = false;
+        SpeakButton.Opacity = .65;
+        SpeakButton.Content = "⏳ 加载发音";
+
+        var preferred = _audioProviders[_selectedAudioProviderIndex];
+        var candidates = new[] { preferred }
+            .Concat(_audioProviders.Where(provider => provider != preferred && provider.Available)
+                .OrderBy(provider => provider.LatencyMs))
+            .Concat(_audioProviders.Where(provider => provider != preferred && !provider.Available))
+            .Distinct();
+
+        foreach (var provider in candidates)
+        {
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(7));
+                var stopwatch = Stopwatch.StartNew();
+                var bytes = await GetAudioBytesAsync(provider, word, dictionaryAudioUrl, timeout.Token);
+                stopwatch.Stop();
+                if (requestId != _audioRequestId) return;
+
+                var cacheDirectory = Path.Combine(Path.GetTempPath(), "LinguaOrb");
+                Directory.CreateDirectory(cacheDirectory);
+                var cachePath = Path.Combine(cacheDirectory, "current-pronunciation.mp3");
+                _player.Close();
+                await File.WriteAllBytesAsync(cachePath, bytes);
+
+                provider.Available = true;
+                provider.LatencyMs = stopwatch.ElapsedMilliseconds;
+                _selectedAudioProviderIndex = _audioProviders.IndexOf(provider);
+                _audioFilePath = cachePath;
+                SpeakButton.IsEnabled = true;
+                SpeakButton.Opacity = 1;
+                SpeakButton.Content = "🔊 英式发音";
+                UpdateAllAudioProviderTiles();
+                StatusText.Text = $"发音已缓存 · {provider.Name} · {provider.LatencyMs} ms";
+                return;
+            }
+            catch
+            {
+                provider.Available = false;
+                provider.LatencyMs = long.MaxValue;
+                UpdateAudioProviderTile(provider, _audioProviders[_selectedAudioProviderIndex] == provider);
+            }
+        }
+
+        if (requestId == _audioRequestId)
+        {
+            SpeakButton.Content = "🔇 暂无发音";
+            StatusText.Text = "所有发音节点暂时不可用";
+        }
+    }
+
     private static string BuildPhonics(string word)
     {
         var parts = Regex.Split(word, @"(?<=[aeiouy])(?=[^aeiouy\s]{1,2}[aeiouy])",
@@ -206,16 +1161,24 @@ public partial class MainWindow : Window
         return string.Join(" · ", parts);
     }
 
-    private void ShowResult(string word, string ipa, string phonics, string source, string? audioUrl)
+    private void ShowResult(
+        string word,
+        string ipa,
+        string phonics,
+        string source,
+        string? audioUrl,
+        string? mediaWord = null)
     {
+        var pronunciationWord = mediaWord ?? word;
         WordText.Text = word;
         IpaText.Text = ipa;
         PhonicsText.Text = $"自然拼读：{phonics}";
-        _audioUrl = audioUrl;
-        SpeakButton.IsEnabled = !string.IsNullOrWhiteSpace(audioUrl);
-        SpeakButton.Opacity = SpeakButton.IsEnabled ? 1 : .55;
-        StatusText.Text = SpeakButton.IsEnabled ? $"{source} · 可播放英式发音" : $"{source} · 暂无发音音频";
-        _ = LoadIllustrationAsync(word);
+        _currentWord = pronunciationWord;
+        _dictionaryAudioUrl = audioUrl;
+        AddDailyWord(pronunciationWord, ipa);
+        StatusText.Text = $"{source} · 正在预加载发音";
+        _ = PrepareAudioAsync(pronunciationWord, audioUrl);
+        _ = LoadIllustrationAsync(pronunciationWord);
     }
 
     private async Task LoadIllustrationAsync(string word)
@@ -280,16 +1243,16 @@ public partial class MainWindow : Window
 
     private void Speak_Click(object sender, RoutedEventArgs e)
     {
-        if (string.IsNullOrWhiteSpace(_audioUrl))
+        if (string.IsNullOrWhiteSpace(_audioFilePath) || !File.Exists(_audioFilePath))
         {
-            StatusText.Text = "该词条暂未收录发音音频";
+            StatusText.Text = "发音尚未加载完成";
             return;
         }
 
         try
         {
             _player.Stop();
-            _player.Open(new Uri(_audioUrl));
+            _player.Open(new Uri(_audioFilePath, UriKind.Absolute));
             _player.Play();
             StatusText.Text = "正在播放英式发音…";
         }
@@ -297,6 +1260,322 @@ public partial class MainWindow : Window
         {
             StatusText.Text = "发音加载失败，请检查网络";
         }
+    }
+
+    private void LoadDailyWords()
+    {
+        try
+        {
+            if (!File.Exists(_dailyWordsPath)) return;
+            var saved = JsonSerializer.Deserialize<DailyWordFile>(File.ReadAllText(_dailyWordsPath));
+            if (saved?.Date == DateTime.Today.ToString("yyyy-MM-dd"))
+                _dailyWords.AddRange(saved.Words.Take(20));
+        }
+        catch { }
+        RefreshDailyWordsPanel();
+    }
+
+    private void SaveDailyWords()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(_dailyWordsPath)!);
+            var data = new DailyWordFile { Date = DateTime.Today.ToString("yyyy-MM-dd"), Words = _dailyWords };
+            File.WriteAllText(_dailyWordsPath, JsonSerializer.Serialize(data));
+        }
+        catch { }
+    }
+
+    private void AddDailyWord(string word, string ipa)
+    {
+        word = Regex.Replace(word.Trim(), @"\s+", " ");
+        if (string.IsNullOrWhiteSpace(word) || _dailyWords.Any(item =>
+                item.Word.Equals(word, StringComparison.OrdinalIgnoreCase))) return;
+        if (_dailyWords.Count >= 20) return;
+        _dailyWords.Add(new DailyWord { Word = word, Ipa = ipa });
+        SaveDailyWords();
+        RefreshDailyWordsPanel();
+    }
+
+    private void RefreshDailyWordsPanel()
+    {
+        if (DailyWordsPanel is null) return;
+        DailyWordsPanel.Children.Clear();
+        DailyReadingTitle.Text = $"今日晨读 · {_dailyWords.Count}/20";
+        if (_dailyWords.Count == 0)
+        {
+            DailyWordsPanel.Children.Add(new TextBlock
+            {
+                Text = "今天还没有单词，先去查询几个吧",
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(0, 38, 0, 0), Foreground = BrushFrom("#8D86A0")
+            });
+            return;
+        }
+
+        foreach (var item in _dailyWords)
+        {
+            var check = new CheckBox { IsChecked = item.Completed, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) };
+            check.Checked += (_, _) => { item.Completed = true; SaveDailyWords(); };
+            check.Unchecked += (_, _) => { item.Completed = false; SaveDailyWords(); };
+            var wordBlock = new TextBlock { Text = item.Word, FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = BrushFrom("#403958") };
+            var ipaBlock = new TextBlock { Text = item.Ipa, FontSize = 10, Foreground = BrushFrom("#8D86A0") };
+            var text = new StackPanel();
+            text.Children.Add(wordBlock);
+            text.Children.Add(ipaBlock);
+            var speaker = new Button
+            {
+                Content = "🔊", Tag = item.Word, Width = 38, Height = 32,
+                HorizontalAlignment = HorizontalAlignment.Right, Background = BrushFrom("#FFF1EB"), BorderThickness = new Thickness(0)
+            };
+            speaker.Click += DailyWordSpeak_Click;
+            var row = new Grid();
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            Grid.SetColumn(check, 0); Grid.SetColumn(text, 1); Grid.SetColumn(speaker, 2);
+            row.Children.Add(check); row.Children.Add(text); row.Children.Add(speaker);
+            DailyWordsPanel.Children.Add(new Border
+            {
+                Child = row, Padding = new Thickness(10, 7, 8, 7), Margin = new Thickness(0, 0, 0, 6),
+                Background = BrushFrom("#FFFFFF"), BorderBrush = BrushFrom("#E6E0F3"),
+                BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(10)
+            });
+        }
+    }
+
+    private async void DailyWordSpeak_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string word } button) return;
+        button.IsEnabled = false;
+        button.Content = "⏳";
+        try
+        {
+            var path = await EnsureDailyWordAudioAsync(word);
+            _player.Stop();
+            _player.Open(new Uri(path, UriKind.Absolute));
+            _player.Play();
+        }
+        catch
+        {
+            button.ToolTip = "发音节点暂时不可用，请稍后重试";
+        }
+        finally
+        {
+            button.Content = "🔊";
+            button.IsEnabled = true;
+        }
+    }
+
+    private static string GetDailyAudioCachePath(string word)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "LinguaOrb", "daily");
+        var safeName = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(word)))[..16];
+        return Path.Combine(directory, $"{safeName}.mp3");
+    }
+
+    private async Task<string> EnsureDailyWordAudioAsync(string word)
+    {
+        var path = GetDailyAudioCachePath(word);
+        if (File.Exists(path)) return path;
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var preferred = _audioProviders[_selectedAudioProviderIndex];
+        var candidates = new[] { preferred }
+            .Concat(_audioProviders.Where(provider => provider != preferred && provider.Available).OrderBy(provider => provider.LatencyMs))
+            .Concat(_audioProviders.Where(provider => provider != preferred && !provider.Available))
+            .Distinct();
+        foreach (var provider in candidates)
+        {
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(7));
+                var bytes = await GetAudioBytesAsync(provider, word, null, timeout.Token);
+                await File.WriteAllBytesAsync(path, bytes);
+                _selectedAudioProviderIndex = _audioProviders.IndexOf(provider);
+                return path;
+            }
+            catch { }
+        }
+        throw new InvalidOperationException("所有发音节点暂时不可用。");
+    }
+
+    private async void SaveDailyWords_Click(object sender, RoutedEventArgs e)
+    {
+        if (_dailyWords.Count == 0)
+        {
+            DailyReadingTitle.Text = "今日晨读 · 暂无可保存单词";
+            return;
+        }
+
+        SaveDailyWordsButton.IsEnabled = false;
+        SaveDailyWordsButton.Content = "保存中…";
+        try
+        {
+            var timestamp = DateTime.Now.ToString("yyyy-MM-dd_HHmmss");
+            var exportDirectory = Path.Combine(DailyExportRoot, $"{timestamp}_晨读清单");
+            var audioDirectory = Path.Combine(exportDirectory, "audio");
+            Directory.CreateDirectory(audioDirectory);
+            var markdown = new System.Text.StringBuilder();
+            markdown.AppendLine($"# 鹿鸣晨读清单 · {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            markdown.AppendLine();
+            markdown.AppendLine($"> 共 {_dailyWords.Count} 个单词；音频与清单保存在同一时间线目录。");
+            markdown.AppendLine();
+            markdown.AppendLine("| 序号 | 完成 | 单词 | IPA | 发音 |");
+            markdown.AppendLine("|---:|:---:|---|---|---|");
+            var failedWords = new List<string>();
+            for (var index = 0; index < _dailyWords.Count; index++)
+            {
+                var item = _dailyWords[index];
+                var fileWord = Regex.Replace(item.Word, @"[^A-Za-z0-9_-]+", "-").Trim('-');
+                if (string.IsNullOrWhiteSpace(fileWord)) fileWord = "word";
+                var audioName = $"{index + 1:D2}_{fileWord}.mp3";
+                try
+                {
+                    var cachedAudio = await EnsureDailyWordAudioAsync(item.Word);
+                    File.Copy(cachedAudio, Path.Combine(audioDirectory, audioName), overwrite: true);
+                    markdown.AppendLine($"| {index + 1} | {(item.Completed ? "✓" : "□")} | {item.Word} | {item.Ipa} | [🔊 播放](audio/{audioName}) |");
+                }
+                catch
+                {
+                    failedWords.Add(item.Word);
+                    markdown.AppendLine($"| {index + 1} | {(item.Completed ? "✓" : "□")} | {item.Word} | {item.Ipa} | 暂无音频 |");
+                }
+            }
+            if (failedWords.Count > 0)
+            {
+                markdown.AppendLine();
+                markdown.AppendLine($"> 未能下载音频：{string.Join("、", failedWords)}");
+            }
+            var listPath = Path.Combine(exportDirectory, $"{timestamp}_晨读清单.md");
+            await File.WriteAllTextAsync(listPath, markdown.ToString(), System.Text.Encoding.UTF8);
+            DailyReadingTitle.Text = $"保存成功 · {timestamp}";
+            SaveDailyWordsButton.ToolTip = exportDirectory;
+        }
+        catch (Exception exception)
+        {
+            DailyReadingTitle.Text = "保存失败 · 请检查目录权限";
+            SaveDailyWordsButton.ToolTip = exception.Message;
+        }
+        finally
+        {
+            SaveDailyWordsButton.Content = "保存";
+            SaveDailyWordsButton.IsEnabled = true;
+        }
+    }
+
+    private static List<DailyWord> ReadArchivedWords(string markdownPath)
+    {
+        var words = new List<DailyWord>();
+        foreach (var line in File.ReadLines(markdownPath))
+        {
+            var match = Regex.Match(line,
+                @"^\|\s*\d+\s*\|\s*(?<done>✓|□)\s*\|\s*(?<word>[^|]+?)\s*\|\s*(?<ipa>[^|]*?)\s*\|");
+            if (!match.Success) continue;
+            words.Add(new DailyWord
+            {
+                Word = match.Groups["word"].Value.Trim(),
+                Ipa = match.Groups["ipa"].Value.Trim(),
+                Completed = match.Groups["done"].Value == "✓"
+            });
+        }
+        return words.Take(20).ToList();
+    }
+
+    private void RefreshReviewListsPanel()
+    {
+        if (ReviewListsPanel is null) return;
+        ReviewListsPanel.Children.Clear();
+        try
+        {
+            if (!Directory.Exists(DailyExportRoot))
+            {
+                AddReviewMessage("还没有保存过晨读清单");
+                return;
+            }
+            var files = Directory.EnumerateFiles(DailyExportRoot, "*_晨读清单.md", SearchOption.AllDirectories)
+                .OrderByDescending(File.GetLastWriteTime)
+                .ToList();
+            if (files.Count == 0)
+            {
+                AddReviewMessage("还没有保存过晨读清单");
+                return;
+            }
+            foreach (var file in files)
+            {
+                var words = ReadArchivedWords(file);
+                var directoryName = Path.GetFileName(Path.GetDirectoryName(file)) ?? Path.GetFileNameWithoutExtension(file);
+                var title = directoryName.Replace("_晨读清单", "  晨读清单");
+                var button = new Button
+                {
+                    Tag = file, HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                    Padding = new Thickness(11, 9, 11, 9), Margin = new Thickness(0, 0, 0, 7),
+                    Background = BrushFrom("#FFFFFF"), BorderBrush = BrushFrom("#E1DAF2"),
+                    BorderThickness = new Thickness(1)
+                };
+                var row = new Grid();
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                row.Children.Add(new TextBlock
+                {
+                    Text = title, FontSize = 12, FontWeight = FontWeights.SemiBold,
+                    Foreground = BrushFrom("#4C4564"), VerticalAlignment = VerticalAlignment.Center
+                });
+                var count = new TextBlock
+                {
+                    Text = $"{words.Count} 词  ›", FontSize = 11, Foreground = BrushFrom("#7C63D9"),
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                Grid.SetColumn(count, 1);
+                row.Children.Add(count);
+                button.Content = row;
+                button.Click += ReviewList_Click;
+                ReviewListsPanel.Children.Add(button);
+            }
+        }
+        catch (Exception exception)
+        {
+            AddReviewMessage($"读取历史清单失败：{exception.Message}");
+        }
+    }
+
+    private void AddReviewMessage(string message)
+    {
+        ReviewListsPanel.Children.Add(new TextBlock
+        {
+            Text = message, TextWrapping = TextWrapping.Wrap, HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 38, 0, 0), Foreground = BrushFrom("#8D86A0")
+        });
+    }
+
+    private void ReviewList_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string file }) return;
+        try
+        {
+            var archivedWords = ReadArchivedWords(file);
+            if (archivedWords.Count == 0)
+            {
+                AddReviewMessage("这个历史清单中没有可加载的单词");
+                return;
+            }
+            _dailyWords.Clear();
+            _dailyWords.AddRange(archivedWords);
+            SaveDailyWords();
+            SetAssistantMode(AssistantMode.DailyReading);
+            DailyReadingTitle.Text = $"已加载复习 · {Path.GetFileName(Path.GetDirectoryName(file))}";
+        }
+        catch (Exception exception)
+        {
+            AddReviewMessage($"加载失败：{exception.Message}");
+        }
+    }
+
+    private void ClearDailyWords_Click(object sender, RoutedEventArgs e)
+    {
+        _dailyWords.Clear();
+        SaveDailyWords();
+        RefreshDailyWordsPanel();
     }
 
     private void Header_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)

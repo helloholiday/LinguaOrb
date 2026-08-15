@@ -2,12 +2,12 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="LinguaOrb 即时翻译助手"
-        Width="450" Height="610"
+        Width="470" Height="610"
         WindowStyle="None" AllowsTransparency="True" Background="Transparent"
         ResizeMode="NoResize" ShowInTaskbar="False" Topmost="True"
         Loaded="Window_Loaded">
     <Grid>
-        <Border x:Name="Card" Visibility="Collapsed" Margin="8,8,86,82"
+        <Border x:Name="Card" Visibility="Collapsed" Margin="8,8,100,82"
                 Background="#FFFDFB" BorderBrush="#E8E1FF" BorderThickness="1"
                 CornerRadius="24">
             <Border.Effect>
@@ -24,25 +24,51 @@
                 </Grid.RowDefinitions>
 
                 <Grid MouseLeftButtonDown="Header_MouseLeftButtonDown">
-                    <StackPanel>
-                        <TextBlock Text="LinguaOrb" FontSize="22" FontWeight="Bold" Foreground="{StaticResource InkBrush}"/>
-                        <TextBlock Text="把中文变成今天的新单词" Margin="0,3,0,0" FontSize="12" Foreground="#88829E"/>
+                    <TextBlock x:Name="NetworkRequestText" Text="UDP:0/0  TCP:0/0"
+                               HorizontalAlignment="Left" VerticalAlignment="Top" Margin="0,5,0,0"
+                               FontSize="10" FontFamily="Consolas" Foreground="#817A94"
+                               ToolTip="当前请求数 / 本次启动累计请求数"/>
+                    <StackPanel Margin="0,25,35,0">
+                        <StackPanel Orientation="Horizontal">
+                            <Border Width="38" Height="38" Margin="0,0,9,0" CornerRadius="11" Background="#FFF5E8">
+                                <Image x:Name="HeaderDeerAnimationImage" Source="Assets/deer-drink-1.png" Margin="2" Stretch="Uniform"/>
+                            </Border>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="鹿鸣 · LinguaOrb" FontSize="20" FontWeight="Bold" Foreground="{StaticResource InkBrush}"/>
+                                <TextBlock x:Name="ModeSubtitle" Text="把中文变成今天的新单词" Margin="0,2,0,0" FontSize="11" Foreground="#88829E"/>
+                            </StackPanel>
+                        </StackPanel>
+                        <UniformGrid Columns="6" Margin="0,8,0,0">
+                            <Button x:Name="ZhWordModeButton" Content="中→英" Height="28" FontSize="11"
+                                    Click="ZhWordMode_Click" Background="#7C63D9" Foreground="White" BorderThickness="0"/>
+                            <Button x:Name="EnWordModeButton" Content="英→中" Height="28" FontSize="11"
+                                    Click="EnWordMode_Click" Background="#EEEAF8" Foreground="#655E74" BorderThickness="0"/>
+                            <Button x:Name="ParagraphModeButton" Content="中段→英" Height="28" FontSize="10"
+                                    Click="ParagraphMode_Click" Background="#EEEAF8" Foreground="#655E74" BorderThickness="0"/>
+                            <Button x:Name="EnParagraphModeButton" Content="英段→中" Height="28" FontSize="10"
+                                    Click="EnParagraphMode_Click" Background="#EEEAF8" Foreground="#655E74" BorderThickness="0"/>
+                            <Button x:Name="DailyReadingModeButton" Content="晨读" Height="28" FontSize="10"
+                                    Click="DailyReadingMode_Click" Background="#EEEAF8" Foreground="#655E74" BorderThickness="0"/>
+                            <Button x:Name="DailyReviewModeButton" Content="复习" Height="28" FontSize="10"
+                                    Click="DailyReviewMode_Click" Background="#EEEAF8" Foreground="#655E74" BorderThickness="0"/>
+                        </UniformGrid>
                     </StackPanel>
                     <Button Content="×" HorizontalAlignment="Right" VerticalAlignment="Top"
                             Width="30" Height="30" FontSize="18" Click="Close_Click"
                             Background="Transparent" BorderThickness="0" Foreground="#8F88A8"/>
                 </Grid>
 
-                <Border Grid.Row="1" Margin="0,18,0,12" CornerRadius="14" Background="#F4F1FC"
+                <Border x:Name="InputPanel" Grid.Row="1" Margin="0,12,0,12" CornerRadius="14" Background="#F4F1FC"
                         BorderBrush="#E2DAF8" BorderThickness="1">
-                    <TextBox x:Name="InputBox" Margin="14,11" MinHeight="42"
+                    <TextBox x:Name="InputBox" Margin="14,11" MinHeight="42" MaxHeight="90"
                              FontSize="16" TextWrapping="Wrap" AcceptsReturn="True"
+                             VerticalScrollBarVisibility="Auto"
                              BorderThickness="0" Background="Transparent"
                              Foreground="{StaticResource InkBrush}"
                              ToolTip="输入中文，例如：蝴蝶"/>
                 </Border>
 
-                <Button Grid.Row="2" Height="44" Content="翻  译" Click="Translate_Click"
+                <Button x:Name="TranslateButton" Grid.Row="2" Height="44" Content="翻  译" Click="Translate_Click"
                         FontSize="15" FontWeight="SemiBold" Foreground="White"
                         Background="{StaticResource PurpleBrush}" BorderThickness="0">
                     <Button.Template>
@@ -54,7 +80,7 @@
                     </Button.Template>
                 </Button>
 
-                <Border Grid.Row="3" Margin="0,16,0,0" Padding="16,13" CornerRadius="16" Background="#FFF1EB">
+                <Border x:Name="WordResultCard" Grid.Row="3" Margin="0,16,0,0" Padding="16,13" CornerRadius="16" Background="#FFF1EB">
                     <StackPanel>
                         <Grid>
                             <TextBlock x:Name="WordText" Text="butterfly" FontSize="26" FontWeight="Bold" Foreground="#E86855"/>
@@ -81,38 +107,77 @@
                         </Border>
                     </Grid>
                 </Border>
+
+                <Border x:Name="ParagraphResultCard" Grid.Row="3" Grid.RowSpan="3" Visibility="Collapsed"
+                        Margin="0,16,0,0" Padding="12" CornerRadius="16" Background="#F8F6FD"
+                        BorderBrush="#E2DAF8" BorderThickness="1">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel x:Name="ParagraphResultsPanel">
+                            <TextBlock Text="输入中文段落后点击翻译" HorizontalAlignment="Center"
+                                       Margin="0,18" Foreground="#8D86A0" FontSize="12"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Border>
+
+                <Border x:Name="DailyReadingCard" Grid.Row="1" Grid.RowSpan="5" Visibility="Collapsed"
+                        Margin="0,12,0,0" Padding="12" CornerRadius="16" Background="#F8F6FD"
+                        BorderBrush="#E2DAF8" BorderThickness="1">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <Grid>
+                            <StackPanel>
+                                <TextBlock x:Name="DailyReadingTitle" Text="今日晨读 · 0/20" FontSize="15" FontWeight="Bold" Foreground="#4C4564"/>
+                                <TextBlock Text="查询成功的英文词会自动加入；点击喇叭跟读" Margin="0,3,0,8" FontSize="10" Foreground="#8D86A0"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
+                                <Button x:Name="SaveDailyWordsButton" Content="保存" Padding="9,4" Margin="0,0,6,0"
+                                        Click="SaveDailyWords_Click" Background="#E9F6EE" Foreground="#27845A" BorderThickness="0"/>
+                                <Button Content="清空" Padding="9,4" Click="ClearDailyWords_Click"
+                                        Background="#FFF1EB" Foreground="#B85B4B" BorderThickness="0"/>
+                            </StackPanel>
+                        </Grid>
+                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                            <StackPanel x:Name="DailyWordsPanel"/>
+                        </ScrollViewer>
+                    </Grid>
+                </Border>
+
+                <Border x:Name="DailyReviewCard" Grid.Row="1" Grid.RowSpan="5" Visibility="Collapsed"
+                        Margin="0,12,0,0" Padding="12" CornerRadius="16" Background="#F8F6FD"
+                        BorderBrush="#E2DAF8" BorderThickness="1">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="历史晨读清单" FontSize="15" FontWeight="Bold" Foreground="#4C4564"/>
+                            <TextBlock Text="按时间倒序排列；点击即可加载回晨读" Margin="0,3,0,8" FontSize="10" Foreground="#8D86A0"/>
+                        </StackPanel>
+                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                            <StackPanel x:Name="ReviewListsPanel"/>
+                        </ScrollViewer>
+                    </Grid>
+                </Border>
             </Grid>
         </Border>
 
         <StackPanel x:Name="ApiStatusPanel" Visibility="Collapsed"
-                    Width="68" HorizontalAlignment="Right" VerticalAlignment="Top"
-                    Margin="0,24,8,0">
-            <TextBlock Text="网络状态" HorizontalAlignment="Center" Margin="0,0,0,7"
-                       FontSize="10" FontWeight="SemiBold" Foreground="#6F6883"/>
-            <Border x:Name="TranslateApiTile" Margin="0,0,0,7" Padding="4,8"
-                    CornerRadius="11" Background="#F5F2FA" BorderBrush="#DDD7E8" BorderThickness="1">
-                <StackPanel>
-                    <TextBlock Text="翻译" HorizontalAlignment="Center" FontSize="10" Foreground="#655E74"/>
-                    <TextBlock x:Name="TranslatePingText" Text="检测中" Margin="0,4,0,0"
-                               HorizontalAlignment="Center" FontSize="10" FontWeight="Bold" Foreground="#8A8299"/>
-                </StackPanel>
-            </Border>
-            <Border x:Name="DictionaryApiTile" Margin="0,0,0,7" Padding="4,8"
-                    CornerRadius="11" Background="#F5F2FA" BorderBrush="#DDD7E8" BorderThickness="1">
-                <StackPanel>
-                    <TextBlock Text="发音" HorizontalAlignment="Center" FontSize="10" Foreground="#655E74"/>
-                    <TextBlock x:Name="DictionaryPingText" Text="检测中" Margin="0,4,0,0"
-                               HorizontalAlignment="Center" FontSize="10" FontWeight="Bold" Foreground="#8A8299"/>
-                </StackPanel>
-            </Border>
-            <Border x:Name="ImageApiTile" Padding="4,8"
-                    CornerRadius="11" Background="#F5F2FA" BorderBrush="#DDD7E8" BorderThickness="1">
-                <StackPanel>
-                    <TextBlock Text="配图" HorizontalAlignment="Center" FontSize="10" Foreground="#655E74"/>
-                    <TextBlock x:Name="ImagePingText" Text="检测中" Margin="0,4,0,0"
-                               HorizontalAlignment="Center" FontSize="10" FontWeight="Bold" Foreground="#8A8299"/>
-                </StackPanel>
-            </Border>
+                    Width="84" HorizontalAlignment="Right" VerticalAlignment="Top"
+                    Margin="0,15,8,0">
+            <UniformGrid Columns="2" Margin="0,0,0,5">
+                <Button x:Name="TranslationTabButton" Content="翻译" Height="25" FontSize="10"
+                        Click="TranslationTab_Click" Background="#7C63D9" Foreground="White"
+                        BorderThickness="0"/>
+                <Button x:Name="AudioTabButton" Content="声音" Height="25" FontSize="10"
+                        Click="AudioTab_Click" Background="#EEEAF8" Foreground="#655E74"
+                        BorderThickness="0"/>
+            </UniformGrid>
+            <StackPanel x:Name="TranslationNodesPanel"/>
+            <StackPanel x:Name="AudioNodesPanel" Visibility="Collapsed"/>
         </StackPanel>
 
         <Button x:Name="OrbButton" Width="66" Height="66" HorizontalAlignment="Right"
@@ -120,14 +185,12 @@
                 ToolTip="打开 LinguaOrb">
             <Button.Template>
                 <ControlTemplate TargetType="Button">
-                    <Border CornerRadius="33" Background="#7C63D9">
+                    <Border CornerRadius="33" Background="#FFF7EA" BorderBrush="#7C63D9" BorderThickness="2">
                         <Border.Effect>
                             <DropShadowEffect BlurRadius="18" ShadowDepth="5" Opacity=".35" Color="#5948A5"/>
                         </Border.Effect>
                         <Grid>
-                            <Ellipse Margin="9" Fill="#927EE3"/>
-                            <TextBlock Text="译" Foreground="White" FontWeight="Bold" FontSize="25"
-                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <Image x:Name="DeerAnimationImage" Source="Assets/deer-drink-1.png" Margin="4" Stretch="Uniform"/>
                         </Grid>
                     </Border>
                 </ControlTemplate>
